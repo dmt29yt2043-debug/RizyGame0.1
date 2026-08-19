@@ -6,6 +6,8 @@
 // ---------- УТИЛИТЫ ----------
 const cv = document.getElementById("cv");
 const ctx = cv.getContext("2d");
+ctx.imageSmoothingEnabled = true;
+ctx.imageSmoothingQuality = "high";   // без этого тонкие лапы Му-Хрю мылятся при ужатии
 const $ = id => document.getElementById(id);
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 const dist = (x1,y1,x2,y2) => Math.hypot(x2-x1, y2-y1);
@@ -57,7 +59,7 @@ function loadAssets(done){
     img.src = IMGS[k] + "?v=" + ART_VERSION;
   });
 }
-const ART_VERSION = 1;
+const ART_VERSION = 2;
 
 // ---------- СОСТОЯНИЕ ----------
 const S = {
@@ -66,7 +68,7 @@ const S = {
   stage: 0,
   x: 480, y: 430, dir: 1,   // dir: 1 вправо, -1 влево
   faceX: 0, faceY: 1,       // направление взгляда (8-way) для выбора ракурса
-  moving: false, running: false,
+  moving: false, running: false, walkAmp: 0,
   energy: 100, energons: 0,
   pulseT: 0,                // время с последнего импульса (для анимации кольца)
   pulseX: 0, pulseY: 0,
@@ -86,7 +88,49 @@ const S = {
   gargAsleepHintShown: false,
 };
 let entities = { npcs: [], pickups: [], enemies: [], zones: [], gargoyle: null, shipNode: null, illusionItems: [] };
-let companions = { kubi: {x:450,y:400}, fant: {x:450,y:400} };
+let companions = {
+  kubi: {x:450,y:400},
+  fant: {x:450,y:400},
+  muhru: {x:450,y:430, faceX:0, faceY:1, walkT:0, walkAmp:0, moving:false},
+};
+
+// Му-Хрю идёт следом сам: держит дистанцию, разворачивается и переставляет ноги
+function updateFollower(f, dt, tx, ty, sc, speed){
+  const d = dist(f.x, f.y, tx, ty);
+  const depth = depthScale(sc, f.y);
+  if (d > 58){
+    const vx = (tx-f.x)/d, vy = (ty-f.y)/d;
+    const step = Math.min(d - 52, speed * depth * dt);
+    const nx = f.x + vx*step, ny = f.y + vy*step;
+    if (pointInPoly(nx, ny, sc.poly)){ f.x = nx; f.y = ny; }
+    else { f.x = lerp(f.x, tx, dt*1.5); f.y = lerp(f.y, ty, dt*1.5); }
+    f.faceX = Math.abs(vx) > 0.4 ? Math.sign(vx) : 0;
+    f.faceY = Math.abs(vy) > 0.3 ? Math.sign(vy) : (f.faceX ? 0 : 1);
+    f.walkT += (step / (180 * depth * 0.19)) * Math.PI;
+    f.moving = true;
+  } else f.moving = false;
+  f.walkAmp = lerp(f.walkAmp, f.moving ? 1 : 0, Math.min(1, dt*9));
+}
+
+// Куда сейчас идти по заданию — над этой точкой висит маркер
+function questTarget(){
+  const npc = id => entities.npcs.find(n => n.id === id);
+  const pick = k => entities.pickups.find(p => p.kind === k);
+  if (S.scene === "home"){
+    if (S.stage === 0) return npc("savia");
+    if (S.stage === 1) return npc("attic");
+    if (S.stage === 3) return { x:938, y:470 };
+  }
+  if (S.scene === "street"){
+    if (S.stage === 4) return pick("lamp");
+    if (S.stage === 5) return npc("muhru");
+    if (S.stage >= 6) return npc("hatch");
+  }
+  if (S.scene === "tunnels" && S.stage === 7) return { x:790, y:325 };
+  if (S.scene === "hangar" && S.stage === 9) return entities.shipNode;
+  if (S.scene === "lumenira" && S.stage === 10) return { x:490, y:430 };
+  return null;
+}
 
 // ---------- СЦЕНЫ ----------
 // Координаты — в пространстве канваса 960x540. horizon — линия «дальнего края» пола.
@@ -115,7 +159,7 @@ const SCENES = {
     spawn: [70, 450],
     build(){
       const e = fresh();
-      e.npcs.push({ id:"muhru", key:"sp_muhru", x:120, y:420, h:150, label:"E — Му-Хрю" });
+      e.npcs.push({ id:"muhru", key:"sp_muhru", x:150, y:430, h:178, label:"E — Му-Хрю" });
       if (!S.oldmanDone) e.npcs.push({ id:"oldman", key:"sp_oldman", x:770, y:405, h:120, label:"E — старик в огромных очках" });
       e.npcs.push({ id:"booster", key:null, x:150, y:335, h:0, label:"E — бустерная" });
       if (S.stage===4 && !S.lampFound)
@@ -133,11 +177,12 @@ const SCENES = {
     spawn: [70, 480],
     build(){
       const e = fresh();
-      e.enemies.push(mkSprut(300, 445, 560, 445));
-      e.zones = [ mkKristy(120, 350, 220, 160, 0) ];
-      e.gargoyle = { x:640, y:330, r:125 };
-      addEnergons(e, [[150,380,10],[350,520,15],[650,510,10],[880,480,20]]);
-      e.pickups.push({ id:"boost1", x:500, y:350, r:22, kind:"booster", label:"E — бустер «Фокусник»" });
+      // старт слева свободен, дальше по очереди: патруль → поле Кристов → спящий Гаргонт → ворота
+      e.enemies.push(mkSprut(190, 455, 390, 455));
+      e.zones = [ mkKristy(440, 345, 165, 175, 0) ];
+      e.gargoyle = { x:680, y:330, r:115 };
+      addEnergons(e, [[150,400,10],[300,520,15],[660,505,10],[860,470,20]]);
+      e.pickups.push({ id:"boost1", x:150, y:350, r:22, kind:"booster", label:"E — бустер «Фокусник»" });
       e.exits = [{ x1:700, y1:308, x2:880, y2:345, to:"hangar", need:0 }];
       return e;
     }
@@ -208,13 +253,15 @@ function advanceDialog(){
   dialogIdx++;
   if (dialogIdx >= dialogQueue.length){
     $("dialog").style.display = "none";
-    S.mode = "play";
+    // если поверх уже открыта катсцена — не роняем режим в play (гонка диалог/катсцена)
+    S.mode = $("cut").style.display === "block" ? "cut" : "play";
     if (dialogDone) { const f = dialogDone; dialogDone = null; f(); }
   } else renderDialogLine();
 }
 
 function showCut(steps, done){
   cutQueue = steps; cutIdx = 0; cutDone = done || null;
+  $("dialog").style.display = "none";   // катсцена всегда перекрывает диалог
   S.mode = "cut"; $("cut").style.display = "block";
   renderCutStep();
 }
@@ -249,6 +296,7 @@ function gotoScene(name, after){
     S.x = sc.spawn[0]; S.y = sc.spawn[1];
     companions.kubi = { x:S.x-40, y:S.y-10 };
     companions.fant = { x:S.x+40, y:S.y-10 };
+    companions.muhru = { x:S.x-70, y:S.y+8, faceX:0, faceY:1, walkT:0, walkAmp:0, moving:false };
     rebuildScene();
     sceneLabel(SCENE_NAMES[name]);
     $("fade").style.opacity = 0;
@@ -303,10 +351,10 @@ function startGame(){
 }
 
 function nearestInteractable(){
-  let best = null, bestD = 70;
+  let best = null, bestD = 100;
   for (const n of entities.npcs){
     const d = dist(S.x, S.y, n.x, n.y);
-    if (d < bestD + (n.h ? 20 : 0)) { best = {type:"npc", o:n}; bestD = d; }
+    if (d < bestD) { best = {type:"npc", o:n}; bestD = d; }
   }
   for (const p of entities.pickups){
     const d = dist(S.x, S.y, p.x, p.y);
@@ -361,6 +409,9 @@ function tryInteract(){
     } else if (S.energons >= 100){
       S.energons -= 100; S.energy = clamp(S.energy + 50, 0, 100); S.boosterOffer = false;
       showDialog([{s:"Куби", p:"sp_kubi", t:"Сделка совершена. Минус 100 энергонов, плюс 50 энергии. «Энергия — это всегда привлекательно!»"}]);
+    } else {
+      S.boosterOffer = false;
+      showDialog(DIALOGS.booster_poor);
     }
   }
   else if (id === "hatch"){
@@ -463,14 +514,20 @@ function update(dt){
     const depth = depthScale(sc, S.y);
     const sp = (S.running ? 195 : 115) * depth * dt;
     const len = Math.hypot(dx,dy) || 1;
+    const px0 = S.x, py0 = S.y;
     const nx = S.x + dx/len*sp, ny = S.y + dy/len*sp*0.82;
     if (pointInPoly(nx, ny, sc.poly)) { S.x = nx; S.y = ny; }
     else if (pointInPoly(nx, S.y, sc.poly)) S.x = nx;
     else if (pointInPoly(S.x, ny, sc.poly)) S.y = ny;
     if (dx !== 0) S.dir = dx > 0 ? 1 : -1;
     S.faceX = dx; S.faceY = dy;
-    S.walkT += dt * (S.running ? 13 : 9);
+    // фаза шага идёт от пройденного пути, а не от времени: ступни не «проскальзывают»
+    const moved = Math.hypot(S.x - px0, S.y - py0);
+    S.walkT += (moved / (150 * depth * 0.19)) * Math.PI;
   }
+  // плавно гасим мах ног при остановке, чтобы кукла не замирала рывком
+  S.walkAmp = lerp(S.walkAmp, S.moving ? 1 : 0, Math.min(1, dt*9));
+  if (S.walkAmp < 0.02 && !S.moving) S.walkT = 0;
 
   // энергия: тишина лечит
   if (!S.moving) S.energy = clamp(S.energy + (S.fantJoined ? 6 : 4)*dt, 0, 100);
@@ -481,6 +538,12 @@ function update(dt){
   if (S.pulseT > 1.2) S.pulseT = 0;
   if (S.trueSight > 0) S.trueSight -= dt;
   if (S.alarmCooldown > 0) S.alarmCooldown -= dt;
+
+  // Му-Хрю идёт с Ризи после отключения кнопки (в городе он ещё стоит как NPC)
+  S.muhruFollows = S.stage >= 6 && S.scene !== "street" && S.scene !== "home";
+  if (S.muhruFollows){
+    updateFollower(companions.muhru, dt, S.x - 62*S.dir, S.y + 10, sc, 190);
+  }
 
   // спутники
   const tKubi = { x: S.x - 38*S.dir, y: S.y - 78 };
@@ -540,12 +603,17 @@ function update(dt){
     if (z.kind !== "kristy") continue;
     const phase = (perfT + z.phase) % z.period;
     z.active = phase > z.activeFrom;
-    if (z.active && S.x > z.x && S.x < z.x+z.w && S.y > z.y && S.y < z.y+z.h && S.paralyzed <= 0){
+    const zcx = z.x + z.w/2, zcy = z.y + z.h/2;
+    const nx = (S.x - zcx)/(z.w/2), ny = (S.y - zcy)/(z.h/2);
+    if (z.active && nx*nx + ny*ny < 1 && S.paralyzed <= 0){
       S.paralyzed = 1.3;
       S.energy = clamp(S.energy - 15, 0, 100);
       shake = 0.5;
-      // вытолкнуть к ближайшему краю зоны
-      S.x = (S.x - z.x < z.x + z.w - S.x) ? z.x - 14 : z.x + z.w + 14;
+      // выталкивает наружу по кратчайшему направлению от центра поля
+      const len = Math.hypot(nx, ny) || 1;
+      S.x = zcx + (nx/len) * (z.w/2 + 16);
+      S.y = zcy + (ny/len) * (z.h/2 + 12);
+      if (!pointInPoly(S.x, S.y, sc.poly)) S.y = clamp(S.y, sc.horizon + 55, 528);
       if (S.energy <= 0) return faint();
     }
   }
@@ -560,6 +628,15 @@ function update(dt){
       const k = mkKubit(60+i*30, 350+i*40, 60+i*30, 350+i*40);
       k.ttl = 12; k.chase = true;
       entities.enemies.push(k);
+    }
+  }
+
+  // подстраховка: с лампьютером у Му-Хрю сцена начинается сама, без нажатия E
+  if (S.scene === "street" && S.stage === 5 && S.lampFound){
+    const m = entities.npcs.find(n => n.id === "muhru");
+    if (m && dist(S.x, S.y, m.x, m.y) < 85){
+      showDialog(DIALOGS.muhru_lamp, () => setStage(6));
+      return;
     }
   }
 
@@ -634,23 +711,102 @@ function depthScale(sc, y){
   return clamp(0.42 + 0.6 * (y - sc.horizon) / (540 - sc.horizon), 0.34, 1.05);
 }
 
-function drawSprite(key, x, y, h, flip, bobPhase){
+// Риг походки: где резать спрайт на торс и ноги (доля высоты) и где делить ноги (доля ширины).
+// "split" — ноги видны раздельно; "scissor" — ноги сомкнуты, шагаем ножницами.
+const RIG = {
+  sp_rizy:        { cut:0.60, mode:"scissor" },
+  sp_rizy_front:  { cut:0.591, split:0.489, mode:"split" },
+  sp_rizy_back:   { cut:0.588, split:0.489, mode:"split" },
+  sp_rizy_45r:    { cut:0.60, mode:"scissor" },
+  sp_rizy_left:   { cut:0.60, mode:"scissor" },
+  sp_rizy_right:  { cut:0.60, mode:"scissor" },
+  sp_muhru:       { cut:0.70, mode:"scissor" },
+  sp_muhru_front: { cut:0.718, split:0.667, mode:"split" },
+  sp_muhru_back:  { cut:0.70, mode:"scissor" },
+  sp_muhru_45r:   { cut:0.70, mode:"scissor" },
+  sp_muhru_left:  { cut:0.70, mode:"scissor" },
+  sp_muhru_right: { cut:0.70, mode:"scissor" },
+};
+
+// Тень всегда лежит на земле в точке (x,y) — персонаж по ней «стоит», а не висит.
+// Размер считаем от РОСТА: у вида в профиль спрайт узкий, и от ширины тень выходила бы с пятак.
+function drawGroundShadow(x, y, h, k){
+  ctx.save();
+  ctx.fillStyle = `rgba(0,0,10,${0.36 * (k===undefined?1:k)})`;
+  ctx.beginPath(); ctx.ellipse(x, y, h*0.17, h*0.06, 0, 0, 7); ctx.fill();
+  ctx.restore();
+}
+
+// Персонаж с настоящей походкой: ноги отрезаются от торса и качаются от бедра.
+// opt: {phase — фаза шага, amp — 0..1 насколько шагает, flip, idle — дышать стоя}
+function drawWalker(key, x, y, h, opt){
+  const o = opt || {};
   const a = A[key];
+  if (!a) return;
   const img = a.img;
   const iw = img.width || 220, ih = img.height || 330;
   const w = h * iw/ih;
-  const bob = bobPhase !== undefined ? Math.sin(bobPhase)*2.5 : 0;
-  ctx.save();
-  ctx.translate(x, y + bob);
-  if (flip) ctx.scale(-1, 1);
-  // тень
-  ctx.save();
-  ctx.scale(1, .35);
-  ctx.fillStyle = "rgba(0,0,10,.35)";
-  ctx.beginPath(); ctx.arc(0, 10, w*.38, 0, 7); ctx.fill();
-  ctx.restore();
-  ctx.drawImage(img, -w/2, -h - bob*0.3, w, h);
-  ctx.restore();
+  const s = h / ih;
+  const amp = o.amp || 0;
+  const ph = o.phase || 0;
+
+  drawGroundShadow(x, y, h, 1 - amp*0.22);
+
+  const rig = a.ok ? RIG[key] : null;
+  const flip = o.flip ? -1 : 1;
+  const top = y - h;
+  // дыхание/покачивание в покое, чтобы кукла не стояла мёртво
+  const idleT = o.idle === false ? 0 : Math.sin(perfT*1.8 + x)*0.9*(1-amp);
+
+  if (!rig){
+    ctx.save();
+    ctx.translate(x, y + idleT*0.3);
+    ctx.scale(flip, 1);
+    ctx.drawImage(img, -w/2, -h - idleT*0.3, w, h);
+    ctx.restore();
+    return;
+  }
+
+  const swing  = Math.sin(ph) * 0.30 * amp;              // мах ноги
+  const bodyUp = Math.abs(Math.cos(ph)) * h * 0.022 * amp;  // корпус выше, когда ноги вместе
+  const cutY = rig.cut * ih;
+  const pivY = cutY - ih*0.05;                            // ось вращения выше линии разреза
+  const lap  = ih * 0.035;                                // нахлёст торса, прячет шов
+
+  // кусок спрайта, повёрнутый вокруг точки (pivotSX, pivotSY) в координатах источника
+  function piece(sx, sy, sw, sh, pvx, pvy, ang, dy, dark){
+    ctx.save();
+    ctx.translate(x + flip*(pvx - iw/2)*s, top + pvy*s + (dy||0));
+    ctx.scale(flip, 1);
+    ctx.rotate(ang);
+    if (dark) ctx.filter = "brightness(0.62)";   // дальняя нога уходит в тень — читается как отдельная
+    ctx.drawImage(img, sx, sy, sw, sh, (sx - pvx)*s, (sy - pvy)*s, sw*s, sh*s);
+    ctx.restore();
+  }
+
+  if (rig.mode === "split"){
+    const spx = rig.split * iw;
+    piece(0, cutY, spx, ih-cutY, spx*0.5, pivY, -swing*0.85, 0, amp > 0.05);      // дальняя нога
+    piece(spx, cutY, iw-spx, ih-cutY, spx + (iw-spx)*0.5, pivY, swing*0.85);      // ближняя
+    piece(0, 0, iw, cutY+lap, iw/2, pivY, swing*0.05, -bodyUp - idleT);           // торс сверху
+  } else {
+    piece(0, cutY, iw, ih-cutY, iw/2, pivY, -swing*1.15, 0, amp > 0.05);          // дальняя нога
+    piece(0, 0, iw, cutY+lap, iw/2, pivY, swing*0.06, -bodyUp - idleT);           // торс
+    piece(0, cutY, iw, ih-cutY, iw/2, pivY, swing*1.15);                          // ближняя нога
+  }
+}
+
+// Совместимость: статичные персонажи и враги рисуются тем же путём
+function drawSprite(key, x, y, h, flip, bobPhase){
+  drawWalker(key, x, y, h, { amp:0, flip, idle: bobPhase !== undefined });
+}
+
+// Ракурс по направлению взгляда: спина / профиль / три четверти
+function viewFor(pref, fx, fy){
+  const K = k => "sp_" + pref + k;
+  if (fy < 0) return fx < 0 ? K("_left") : fx > 0 ? K("_right") : K("_back");
+  if (fy > 0) return fx < 0 ? K("") : fx > 0 ? K("_45r") : K("_front");
+  return fx < 0 ? K("_left") : fx > 0 ? K("_right") : K("_front");
 }
 
 function draw(t){
@@ -674,16 +830,43 @@ function draw(t){
     const active = phase > z.activeFrom;
     const warn = !active && phase > z.activeFrom - 0.9;
     ctx.save();
+    const cxz = z.x + z.w/2, cyz = z.y + z.h/2;
     if (active){
-      ctx.fillStyle = "rgba(126,240,255,.28)";
-      ctx.fillRect(z.x, z.y, z.w, z.h);
-      for (let i=0;i<5;i++){
-        ctx.strokeStyle = `rgba(126,240,255,${.5 - i*.09})`;
-        ctx.strokeRect(z.x - i*3, z.y - i*3, z.w + i*6, z.h + i*6);
+      // разряд между Кристами: пульсирующее ядро и бегущие дуги
+      const g = ctx.createRadialGradient(cxz, cyz, 4, cxz, cyz, Math.max(z.w,z.h)*0.62);
+      g.addColorStop(0, "rgba(180,250,255,.42)");
+      g.addColorStop(0.55, "rgba(126,240,255,.22)");
+      g.addColorStop(1, "rgba(126,240,255,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.ellipse(cxz, cyz, z.w*0.56, z.h*0.56, 0, 0, 7); ctx.fill();
+      ctx.strokeStyle = "rgba(200,252,255,.75)"; ctx.lineWidth = 1.6;
+      for (let i=0;i<4;i++){
+        const p = ((t*0.9 + i*0.25) % 1);
+        ctx.globalAlpha = Math.sin(p*Math.PI) * 0.8;
+        ctx.beginPath();
+        ctx.ellipse(cxz, cyz, z.w*0.55*p, z.h*0.55*p, 0, 0, 7);
+        ctx.stroke();
       }
-    } else if (warn){
-      ctx.fillStyle = "rgba(255,120,200,.16)";
-      ctx.fillRect(z.x, z.y, z.w, z.h);
+      ctx.globalAlpha = 1;
+      // молнии от углов к центру
+      ctx.strokeStyle = "rgba(255,255,255,.5)"; ctx.lineWidth = 1;
+      for (let i=0;i<4;i++){
+        const a = i*Math.PI/2 + t*1.2;
+        ctx.beginPath(); ctx.moveTo(cxz + Math.cos(a)*z.w*0.5, cyz + Math.sin(a)*z.h*0.5);
+        ctx.lineTo(cxz + Math.cos(a+0.5)*z.w*0.16, cyz + Math.sin(a+0.5)*z.h*0.16);
+        ctx.stroke();
+      }
+    } else {
+      // поле спит — но контур виден всегда, чтобы не влететь вслепую
+      ctx.strokeStyle = warn ? "rgba(255,120,200,.8)" : "rgba(126,240,255,.3)";
+      ctx.setLineDash([10,8]); ctx.lineWidth = 2;
+      ctx.lineDashOffset = -t*14;
+      ctx.beginPath(); ctx.ellipse(cxz, cyz, z.w*0.5, z.h*0.5, 0, 0, 7); ctx.stroke();
+      ctx.setLineDash([]);
+      if (warn){
+        ctx.fillStyle = "rgba(255,120,200,.12)";
+        ctx.beginPath(); ctx.ellipse(cxz, cyz, z.w*0.5, z.h*0.5, 0, 0, 7); ctx.fill();
+      }
     }
     if (S.trueSight > 0){
       ctx.fillStyle = active ? "#ff5c8a" : "#C0FF3F";
@@ -748,6 +931,16 @@ function draw(t){
     }});
   }
 
+  // Му-Хрю-спутник
+  if (S.muhruFollows){
+    const m = companions.muhru;
+    drawables.push({ y: m.y, fn: () => {
+      let k = viewFor("muhru", m.faceX, m.faceY);
+      if (!A[k] || !A[k].ok) k = "sp_muhru";
+      drawWalker(k, m.x, m.y, 178 * depthScale(sc, m.y), { phase:m.walkT, amp:m.walkAmp });
+    }});
+  }
+
   // спутники
   drawables.push({ y: companions.kubi.y + 80, fn: () => {
     const h = 56 * depthScale(sc, companions.kubi.y + 80);
@@ -763,6 +956,23 @@ function draw(t){
 
   drawables.sort((a,b) => a.y - b.y);
   drawables.forEach(d => d.fn());
+
+  // маркер цели задания — чтобы никогда не гадать, куда идти
+  const qt = questTarget();
+  if (qt){
+    const bob = Math.sin(t*3.4)*5;
+    const my = qt.y - (qt.h ? qt.h*depthScale(sc, qt.y) : 60) - 26 + bob;
+    ctx.save();
+    ctx.globalAlpha = 0.55 + Math.sin(t*3.4)*0.2;
+    ctx.strokeStyle = "#C0FF3F"; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.ellipse(qt.x, qt.y, 26, 10, 0, 0, 7); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = "#C0FF3F";
+    ctx.beginPath();
+    ctx.moveTo(qt.x, my + 14); ctx.lineTo(qt.x - 10, my); ctx.lineTo(qt.x + 10, my);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
 
   // импульс сердца
   if (S.pulseT > 0){
@@ -804,44 +1014,16 @@ function draw(t){
   ctx.restore();
 }
 
-// Ракурс Ризи по направлению движения (мастер-лист: 6 видов)
-function rizyView(){
-  if (S.faceY < 0) return "sp_rizy_back";
-  if (S.faceX < 0 && S.faceY > 0) return "sp_rizy";      // 45° влево
-  if (S.faceX > 0 && S.faceY > 0) return "sp_rizy_45r";  // 45° вправо
-  if (S.faceX < 0) return "sp_rizy_left";
-  if (S.faceX > 0) return "sp_rizy_right";
-  return "sp_rizy_front";
-}
+function rizyView(){ return viewFor("rizy", S.faceX, S.faceY); }
 
-// Походка стоп-моушен: подскок + маятниковое покачивание + сквош, поворот от бедра у земли
 function drawRizy(){
   const sc = SCENES[S.scene];
-  const depth = depthScale(sc, S.y);
-  const h = 150 * depth;
-  let a = A[rizyView()];
-  if (!a || !a.ok) a = A["sp_rizy"];
-  const img = a.img;
-  const iw = img.width || 220, ih = img.height || 330;
-  const wpx = h * iw/ih;
-  const moving = S.moving;
-  const hop    = moving ? Math.abs(Math.sin(S.walkT)) * 4.5 * depth : 0;
-  const tilt   = moving ? Math.sin(S.walkT) * 0.075
-                        : Math.sin(perfT*1.7) * 0.012;                  // дыхание в покое
-  const squash = moving ? 1 - 0.045 * Math.abs(Math.cos(S.walkT))
-                        : 1 + Math.sin(perfT*2.2) * 0.008;
-  // тень остаётся на земле и сжимается в верхней точке шага
+  const h = 150 * depthScale(sc, S.y);
+  let key = rizyView();
+  if (!A[key] || !A[key].ok) key = "sp_rizy";
   ctx.save();
-  ctx.translate(S.x, S.y);
-  ctx.scale(1, .35);
-  ctx.fillStyle = `rgba(0,0,10,${Math.max(.15, .35 - hop*.02)})`;
-  ctx.beginPath(); ctx.arc(0, 10, wpx*.42*(1 - hop*.012), 0, 7); ctx.fill();
-  ctx.restore();
-  ctx.save();
-  ctx.translate(S.x, S.y - hop);
-  ctx.rotate(tilt);
   if (S.paralyzed > 0) ctx.filter = "hue-rotate(160deg) brightness(1.3)";
-  ctx.drawImage(img, -wpx/2, -h*squash, wpx, h*squash);
+  drawWalker(key, S.x, S.y, h, { phase: S.walkT, amp: S.walkAmp });
   ctx.restore();
 }
 
