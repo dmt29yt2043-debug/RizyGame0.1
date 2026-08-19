@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Ризи: Побег из Идеалити 2.0</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; background:#070d36; overflow:hidden; }
+  body { display:flex; align-items:center; justify-content:center;
+         font-family:"Avenir Next","Nunito",system-ui,-apple-system,sans-serif; }
+  #stage { position:relative; width:960px; height:540px; transform-origin:center center;
+           box-shadow:0 20px 80px rgba(0,0,0,.6); border-radius:6px; overflow:hidden; }
+  canvas { display:block; width:960px; height:540px; background:#0a0e24; }
+  .ui { position:absolute; color:#fff; user-select:none; }
+  #hud { top:14px; left:14px; }
+  #energyWrap { width:220px; height:20px; background:rgba(7,13,54,.65); border:2px solid #C0FF3F;
+                border-radius:12px; overflow:hidden; position:relative; }
+  #energyBar { height:100%; width:100%; border-radius:9px;
+               background:linear-gradient(90deg,#7ef0ff,#C0FF3F); transition:width .25s; }
+  #energyWrap::after { content:"⬥ энергия сердца"; position:absolute; left:8px; top:1px;
+                       font-size:11px; color:#07103a; font-weight:700; }
+  #objective { left:14px; bottom:12px; max-width:520px; background:rgba(7,13,54,.7);
+               border-left:4px solid #C0FF3F; padding:7px 12px; border-radius:6px;
+               font-size:13px; line-height:1.35; color:#eaffd0; }
+  #objective b { color:#C0FF3F; }
+  #hint { left:50%; bottom:64px; transform:translateX(-50%); background:rgba(7,13,54,.8);
+          border:1px solid #7ef0ff; color:#cfefff; padding:5px 14px; border-radius:20px;
+          font-size:13px; display:none; }
+  #label { top:40px; left:50%; transform:translateX(-50%); font-size:26px; font-weight:800;
+           color:#fff; text-shadow:0 2px 14px #000, 0 0 30px #0536D4; opacity:0;
+           transition:opacity .8s; white-space:nowrap; }
+  #dialog { display:none; left:50%; transform:translateX(-50%); bottom:16px; width:820px;
+            background:rgba(7,13,54,.92); border:2px solid #0536D4; border-radius:14px;
+            padding:12px 16px 14px 16px; }
+  #dialog .row { display:flex; gap:14px; align-items:flex-start; }
+  #dportrait { width:64px; height:64px; border-radius:10px; object-fit:cover; object-position:top;
+               border:2px solid #C0FF3F; flex:0 0 auto; background:#0b1240; }
+  #dname { color:#C0FF3F; font-weight:800; font-size:14px; margin-bottom:3px; }
+  #dtext { color:#f4f7ff; font-size:15px; line-height:1.45; min-height:44px; }
+  #dnext { position:absolute; right:14px; bottom:8px; color:#7ef0ff; font-size:12px; opacity:.85; }
+  #cut { display:none; position:absolute; inset:0; background:#04061f; z-index:20; }
+  #cutimg { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; opacity:.96; }
+  #cutshade { position:absolute; left:0; right:0; bottom:0; height:46%;
+              background:linear-gradient(transparent, rgba(4,6,31,.96) 62%); }
+  #cuttext { position:absolute; left:8%; right:8%; bottom:34px; color:#fff; font-size:17px;
+             line-height:1.5; text-align:center; text-shadow:0 2px 10px #000; }
+  #cuttext .who { color:#C0FF3F; font-weight:800; }
+  #cutnext { position:absolute; right:20px; bottom:12px; color:#7ef0ff; font-size:12px; }
+  #title { display:flex; position:absolute; inset:0; z-index:30; flex-direction:column;
+           background:radial-gradient(120% 90% at 50% 20%, #14206b 0%, #070d36 55%, #04061f 100%);
+           align-items:center; justify-content:center; gap:18px; text-align:center; }
+  #title h1 { font-size:44px; font-weight:900; color:#fff; text-shadow:0 0 34px #0536D4; }
+  #title h1 span { color:#C0FF3F; }
+  #title .v2 { display:inline-block; background:#C0FF3F; color:#07103a; font-size:15px;
+               font-weight:900; border-radius:8px; padding:2px 10px; vertical-align:middle; }
+  #title .sub { color:#9fb4ff; font-size:15px; }
+  #title .press { margin-top:14px; color:#7ef0ff; font-size:16px; animation:blink 1.4s infinite; }
+  #title .keys { color:#5f6fae; font-size:12.5px; line-height:1.7; }
+  @keyframes blink { 50% { opacity:.25; } }
+  #fade { position:absolute; inset:0; background:#04061f; opacity:0; pointer-events:none;
+          transition:opacity .45s; z-index:15; }
+</style>
+</head>
+<body>
+  <div id="stage">
+    <canvas id="cv" width="960" height="540"></canvas>
+    <div class="ui" id="hud"><div id="energyWrap"><div id="energyBar"></div></div></div>
+    <div class="ui" id="objective"><b>Задание:</b> <span id="objText">…</span></div>
+    <div class="ui" id="hint"></div>
+    <div class="ui" id="label"></div>
+    <div class="ui" id="dialog">
+      <div class="row"><img id="dportrait" alt="">
+        <div><div id="dname"></div><div id="dtext"></div></div></div>
+      <div id="dnext">E ▸</div>
+    </div>
+    <div id="cut"><img id="cutimg" alt=""><div id="cutshade"></div>
+      <div id="cuttext"></div><div id="cutnext">E ▸</div></div>
+    <div id="title">
+      <h1>РИЗИ <span class="v2">2.0</span><br><span>ПОБЕГ ИЗ ИДЕАЛИТИ</span></h1>
+      <div class="sub">уровень первый: Дом · большой мир, камера и настоящий бег</div>
+      <div class="press">Нажми ENTER, чтобы начать</div>
+      <div class="keys">Стрелки / WASD — бежать · E — говорить и действовать · ПРОБЕЛ — импульс сердца · F2 — отладка</div>
+    </div>
+    <div id="fade"></div>
+  </div>
+  <script src="game.js?v=1"></script>
+</body>
+</html>
