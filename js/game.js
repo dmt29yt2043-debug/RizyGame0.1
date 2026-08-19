@@ -65,6 +65,7 @@ const S = {
   scene: "home",
   stage: 0,
   x: 480, y: 430, dir: 1,   // dir: 1 вправо, -1 влево
+  faceX: 0, faceY: 1,       // направление взгляда (8-way) для выбора ракурса
   moving: false, running: false,
   energy: 100, energons: 0,
   pulseT: 0,                // время с последнего импульса (для анимации кольца)
@@ -467,6 +468,7 @@ function update(dt){
     else if (pointInPoly(nx, S.y, sc.poly)) S.x = nx;
     else if (pointInPoly(S.x, ny, sc.poly)) S.y = ny;
     if (dx !== 0) S.dir = dx > 0 ? 1 : -1;
+    S.faceX = dx; S.faceY = dy;
     S.walkT += dt * (S.running ? 13 : 9);
   }
 
@@ -757,16 +759,7 @@ function draw(t){
   }});
 
   // Ризи
-  const ph = 150 * depthScale(sc, S.y);
-  drawables.push({ y: S.y, fn: () => {
-    if (S.paralyzed > 0){
-      ctx.save(); ctx.filter = "hue-rotate(160deg) brightness(1.3)";
-      drawSprite("sp_rizy", S.x, S.y, ph, S.dir<0);
-      ctx.restore();
-    } else {
-      drawSprite("sp_rizy", S.x, S.y, ph, S.dir<0, S.moving ? S.walkT : undefined);
-    }
-  }});
+  drawables.push({ y: S.y, fn: () => drawRizy() });
 
   drawables.sort((a,b) => a.y - b.y);
   drawables.forEach(d => d.fn());
@@ -808,6 +801,47 @@ function draw(t){
     ctx.fillText(`scene=${S.scene} stage=${S.stage} x=${S.x|0} y=${S.y|0}`, 12, 530);
     ctx.restore();
   }
+  ctx.restore();
+}
+
+// Ракурс Ризи по направлению движения (мастер-лист: 6 видов)
+function rizyView(){
+  if (S.faceY < 0) return "sp_rizy_back";
+  if (S.faceX < 0 && S.faceY > 0) return "sp_rizy";      // 45° влево
+  if (S.faceX > 0 && S.faceY > 0) return "sp_rizy_45r";  // 45° вправо
+  if (S.faceX < 0) return "sp_rizy_left";
+  if (S.faceX > 0) return "sp_rizy_right";
+  return "sp_rizy_front";
+}
+
+// Походка стоп-моушен: подскок + маятниковое покачивание + сквош, поворот от бедра у земли
+function drawRizy(){
+  const sc = SCENES[S.scene];
+  const depth = depthScale(sc, S.y);
+  const h = 150 * depth;
+  let a = A[rizyView()];
+  if (!a || !a.ok) a = A["sp_rizy"];
+  const img = a.img;
+  const iw = img.width || 220, ih = img.height || 330;
+  const wpx = h * iw/ih;
+  const moving = S.moving;
+  const hop    = moving ? Math.abs(Math.sin(S.walkT)) * 4.5 * depth : 0;
+  const tilt   = moving ? Math.sin(S.walkT) * 0.075
+                        : Math.sin(perfT*1.7) * 0.012;                  // дыхание в покое
+  const squash = moving ? 1 - 0.045 * Math.abs(Math.cos(S.walkT))
+                        : 1 + Math.sin(perfT*2.2) * 0.008;
+  // тень остаётся на земле и сжимается в верхней точке шага
+  ctx.save();
+  ctx.translate(S.x, S.y);
+  ctx.scale(1, .35);
+  ctx.fillStyle = `rgba(0,0,10,${Math.max(.15, .35 - hop*.02)})`;
+  ctx.beginPath(); ctx.arc(0, 10, wpx*.42*(1 - hop*.012), 0, 7); ctx.fill();
+  ctx.restore();
+  ctx.save();
+  ctx.translate(S.x, S.y - hop);
+  ctx.rotate(tilt);
+  if (S.paralyzed > 0) ctx.filter = "hue-rotate(160deg) brightness(1.3)";
+  ctx.drawImage(img, -wpx/2, -h*squash, wpx, h*squash);
   ctx.restore();
 }
 
