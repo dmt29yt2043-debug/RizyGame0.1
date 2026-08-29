@@ -6,73 +6,95 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  html,body { height:100%; background:#dff0ff; overflow:hidden;
+  html,body { height:100%; background:#cfe9ff; overflow:hidden;
               font-family:"Avenir Next","Nunito",system-ui,-apple-system,sans-serif; }
   #wrap { position:relative; width:100vw; height:100vh; }
   canvas { display:block; width:100%; height:100%; }
-  .ui { position:absolute; color:#070D36; user-select:none; z-index:5; }
+  .ui { position:absolute; user-select:none; z-index:5; color:#0b1240; }
 
-  /* стикеры RIZYLAND: чернильная обводка + жёсткая смещённая тень */
-  .sticker { background:#FFFDF7; border:3px solid #070D36; border-radius:16px;
-             box-shadow:5px 6px 0 rgba(7,13,54,.18); }
+  /* фирменные «стикеры» RIZYLAND */
+  .pill { background:linear-gradient(#fffdf7,#ffeedd);
+          border:3.5px solid #0b1240; border-radius:999px;
+          box-shadow:0 5px 0 #0b1240, 0 9px 14px rgba(11,18,64,.28); }
 
-  #score { top:16px; left:18px; font-size:30px; font-weight:900; padding:6px 18px 8px; }
-  #score small { display:block; font-size:12.5px; font-weight:700; color:#5b6bb0; }
-  #energons { top:16px; right:18px; font-size:22px; font-weight:900; color:#d1387f;
-              padding:10px 18px; }
-  #alarm { top:86px; left:50%; transform:translateX(-50%); color:#fff; font-weight:900;
-           font-size:17px; background:#ff5c7a; border:3px solid #070D36; border-radius:14px;
-           padding:6px 16px; display:none; letter-spacing:1px;
-           box-shadow:4px 5px 0 rgba(7,13,54,.18); animation:blink .5s infinite; }
-  @keyframes blink { 50% { opacity:.35; } }
+  #score { top:18px; left:20px; padding:8px 22px 10px; display:flex; align-items:center; gap:10px; }
+  #score .n { font-size:32px; font-weight:900; letter-spacing:-.5px; line-height:1; }
+  #score small { display:block; font-size:11.5px; font-weight:800; color:#6a79c0; margin-top:3px; }
+  #score .ico { font-size:24px; filter:drop-shadow(0 2px 0 rgba(11,18,64,.25)); }
 
-  .panel { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
-           justify-content:center; gap:16px; text-align:center; z-index:10;
-           background:radial-gradient(120% 90% at 50% 12%, rgba(255,253,247,.55) 0%, rgba(223,240,255,.82) 62%); }
-  .panel .card { padding:34px 46px; display:flex; flex-direction:column; gap:14px; align-items:center; max-width:720px; }
-  .panel h1 { font-size:min(7.4vw,54px); font-weight:900; color:#070D36; line-height:1.04; }
-  .panel h1 .blue { color:#0536D4; }
-  .panel .badge { display:inline-block; background:#C0FF3F; color:#07103a; font-size:16px;
-                  font-weight:900; border:3px solid #070D36; border-radius:10px; padding:2px 12px;
-                  vertical-align:middle; box-shadow:3px 3px 0 rgba(7,13,54,.18); }
-  .panel .sub { color:#3a4780; font-size:16px; max-width:600px; line-height:1.55; }
-  .panel .press { margin-top:6px; color:#fff; font-size:18px; font-weight:900; background:#0536D4;
-                  border:3px solid #070D36; border-radius:14px; padding:10px 26px;
-                  box-shadow:4px 5px 0 rgba(7,13,54,.22); animation:blink 1.6s infinite; }
-  .panel .keys { color:#5b6bb0; font-size:13.5px; line-height:1.9; }
-  .panel .stat { font-size:23px; color:#070D36; font-weight:900; }
-  .panel .best { color:#0536D4; }
+  #energons { top:18px; right:20px; padding:8px 20px 10px; display:flex; align-items:center; gap:9px;
+              transition:transform .12s cubic-bezier(.3,1.6,.5,1); }
+  #energons.bump { transform:scale(1.16); }
+  #energons .n { font-size:28px; font-weight:900; color:#d1387f; line-height:1; }
+  #energons .ico { width:26px; height:26px; border-radius:50%;
+                   background:radial-gradient(circle at 35% 30%, #ffd0e6, #ff7ec1 60%, #d1387f);
+                   border:3px solid #0b1240; box-shadow:0 3px 0 #0b1240; }
+
+  /* индикатор роя */
+  #swarm { top:96px; left:50%; transform:translateX(-50%); width:280px; display:none; text-align:center; }
+  #swarm .lbl { font-size:14px; font-weight:900; color:#fff; letter-spacing:.6px;
+                text-shadow:0 2px 0 #b0234a, 0 3px 8px rgba(0,0,0,.3); margin-bottom:5px; }
+  #swarmTrack { height:16px; border:3.5px solid #0b1240; border-radius:999px; background:#ffe6ee;
+                box-shadow:0 4px 0 #0b1240; overflow:hidden; }
+  #swarmFill { height:100%; width:100%; border-radius:999px;
+               background:linear-gradient(90deg,#ffd166,#ff5c7a); transition:width .12s linear; }
+
+  .panel { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+           z-index:10; padding:20px;
+           background:radial-gradient(120% 90% at 50% 10%, rgba(255,253,247,.4) 0%, rgba(160,210,255,.72) 70%); }
+  .card { background:linear-gradient(#fffdf7,#fff2e2); border:4px solid #0b1240; border-radius:28px;
+          box-shadow:0 8px 0 #0b1240, 0 18px 34px rgba(11,18,64,.32);
+          padding:34px 46px 30px; display:flex; flex-direction:column; gap:14px; align-items:center;
+          max-width:660px; text-align:center; }
+  .card h1 { font-size:min(7.2vw,52px); font-weight:900; color:#0b1240; line-height:1.02;
+             text-shadow:0 3px 0 rgba(11,18,64,.14); }
+  .card h1 .blue { color:#0536D4; }
+  .badge { display:inline-block; background:linear-gradient(#d6ff6b,#C0FF3F); color:#0b1240;
+           font-size:17px; font-weight:900; border:3.5px solid #0b1240; border-radius:12px;
+           padding:2px 13px; vertical-align:middle; box-shadow:0 4px 0 #0b1240; }
+  .card .sub { color:#3a4780; font-size:15.5px; max-width:520px; line-height:1.55; }
+  .btn { margin-top:4px; color:#fff; font-size:19px; font-weight:900; letter-spacing:.3px;
+         background:linear-gradient(#3b7bff,#0536D4); border:3.5px solid #0b1240; border-radius:16px;
+         padding:12px 30px; box-shadow:0 6px 0 #0b1240; animation:pulse 1.7s infinite; }
+  @keyframes pulse { 50% { transform:translateY(2px); box-shadow:0 4px 0 #0b1240; } }
+  .keys { color:#6a79c0; font-size:13px; line-height:1.9; font-weight:700; }
+  .stat { font-size:22px; color:#0b1240; font-weight:900; }
+  .best { color:#0536D4; }
   #over { display:none; }
 </style>
 </head>
 <body>
 <div id="wrap">
-  <div class="ui sticker" id="score">0 м<small>рекорд: <span id="best">0</span> м</small></div>
-  <div class="ui sticker" id="energons">⬡ 0</div>
-  <div class="ui" id="alarm">⚠ РОЙ БЛИЗКО ⚠</div>
+  <div class="ui pill" id="score"><span class="ico">❄</span>
+    <span><span class="n">0</span> м<small>рекорд: <span id="best">0</span> м</small></span></div>
+  <div class="ui pill" id="energons"><span class="ico"></span><span class="n">0</span></div>
+
+  <div class="ui" id="swarm">
+    <div class="lbl">РОЙ НАСТИГАЕТ!</div>
+    <div id="swarmTrack"><div id="swarmFill"></div></div>
+  </div>
 
   <div class="panel" id="title">
-    <div class="card sticker">
+    <div class="card">
       <h1>РИЗИ <span class="badge">RUN</span><br><span class="blue">СНЕЖНАЯ РЕКА</span></h1>
-      <div class="sub">Солнечное утро в канун Нового Блока. Кнопка на виске отключена — и рой
-        Гасителей уже гудит за спиной. Беги по снежной реке, Ризи, собирай энергоны — и не оглядывайся!</div>
-      <div class="press">ENTER или ПРОБЕЛ — бежать!</div>
-      <div class="keys">◀ ▶ / A D — сменить полосу · ▲ / W / ПРОБЕЛ — прыжок · ▼ / S — подкат<br>
-        Споткнёшься дважды подряд — рой догонит.</div>
+      <div class="sub">Солнечное утро в канун Нового Блока. Кнопка на виске отключена —
+        и рой Гасителей уже гудит за спиной. Беги, Ризи, собирай энергоны и не оглядывайся!</div>
+      <div class="btn">ENTER или ПРОБЕЛ — бежать!</div>
+      <div class="keys">◀ ▶ / A D — полоса · ▲ / W / ПРОБЕЛ — прыжок · ▼ / S — подкат</div>
     </div>
   </div>
 
   <div class="panel" id="over">
-    <div class="card sticker">
+    <div class="card">
       <h1><span class="blue">РОЙ ДОГНАЛ!</span></h1>
       <div class="stat">Пробег: <span id="finalDist">0</span> м · Энергонов: <span id="finalEn">0</span></div>
       <div class="stat best" id="newBest" style="display:none">✦ НОВЫЙ РЕКОРД! ✦</div>
-      <div class="sub" id="quip">«Статистика занесена в журнал миссии», — вздыхает Куби.</div>
-      <div class="press">ENTER — ещё раз</div>
+      <div class="sub" id="quip"></div>
+      <div class="btn">ENTER — ещё раз</div>
       <div class="keys">ESC — на титульный экран</div>
     </div>
   </div>
 </div>
-<script type="module" src="run.js?v=6"></script>
+<script type="module" src="run.js?v=10"></script>
 </body>
 </html>
