@@ -1,5 +1,5 @@
-// РИЗИ RUN: Неоновая река — 3D-раннер в мире «Побега из Идеалити».
-// Three.js, три полосы, прыжок/подкат, рой Гасителей за спиной.
+// РИЗИ RUN: Снежная Река — светлый мягкий раннер в стилистике RIZYLAND.
+// Солнечное утро, войлочный снежный мир, пастель, круглые формы, мягкие тени.
 
 import * as THREE from "./three.module.js";
 
@@ -10,25 +10,38 @@ const lerp = (a,b,t) => a + (b-a)*t;
 const rnd = (a,b) => a + Math.random()*(b-a);
 const pick = arr => arr[Math.floor(Math.random()*arr.length)];
 
-const COL = {
-  ink:0x070d36, blue:0x0536d4, lime:0xC0FF3F, pink:0xff7ec1, cyan:0x7ef0ff,
-  skin:0x56b7e6, hair:0xcdf24b, jeans:0x1e63e0, dark:0x0a0e2e,
-};
-
 const renderer = new THREE.WebGLRenderer({ antialias:true });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.15;
+renderer.toneMappingExposure = 1.12;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 $("wrap").prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x0a0c2c);
-scene.fog = new THREE.Fog(0x0a0c2c, 26, 125);
 
-const camera = new THREE.PerspectiveCamera(62, innerWidth/innerHeight, 0.1, 300);
-const CAM_BASE = { x:0, y:4.15, z:7.3 };
+// небо: нежный градиент от голубого к кремово-розовому горизонту
+function canvasTex(w, h, draw){
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  draw(c.getContext("2d"), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+scene.background = canvasTex(64, 256, (g,w,h) => {
+  const gr = g.createLinearGradient(0,0,0,h);
+  gr.addColorStop(0, "#9fd6ff");
+  gr.addColorStop(0.55, "#cfeaff");
+  gr.addColorStop(0.8, "#ffeef0");
+  gr.addColorStop(1, "#fff6ea");
+  g.fillStyle = gr; g.fillRect(0,0,w,h);
+});
+scene.fog = new THREE.Fog(0xe6f2ff, 34, 150);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 0.1, 400);
+const CAM_BASE = { x:0, y:4.1, z:7.4 };
 camera.position.set(CAM_BASE.x, CAM_BASE.y, CAM_BASE.z);
 camera.lookAt(0, 1.5, -9);
 
@@ -38,350 +51,381 @@ addEventListener("resize", () => {
   camera.updateProjectionMatrix();
 });
 
-// свет: холодная луна + тёплая подсветка + неоновые акценты
-scene.add(new THREE.HemisphereLight(0x8899ff, 0x0a0c2c, 0.75));
-const moon = new THREE.DirectionalLight(0xbfd4ff, 1.15);
-moon.position.set(-6, 14, -4);
-scene.add(moon);
-const warm = new THREE.PointLight(0xffb46b, 0.55, 40);
-warm.position.set(3, 6, 2);
-scene.add(warm);
+// свет: яркое солнце + мягкое небо
+scene.add(new THREE.HemisphereLight(0xbfe0ff, 0xfff3e0, 1.0));
+const sun = new THREE.DirectionalLight(0xfff1d6, 2.2);
+sun.position.set(9, 16, 6);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -16; sun.shadow.camera.right = 16;
+sun.shadow.camera.top = 10; sun.shadow.camera.bottom = -50;
+sun.shadow.camera.near = 1; sun.shadow.camera.far = 60;
+sun.shadow.bias = -0.0004;
+scene.add(sun);
+sun.target.position.set(0, 0, -14);
+scene.add(sun.target);
 
-// ---------- ТЕКСТУРЫ ИЗ CANVAS ----------
-function canvasTex(w, h, draw){
-  const c = document.createElement("canvas"); c.width = w; c.height = h;
-  draw(c.getContext("2d"), w, h);
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  return t;
+// солнышко в небе + сияние
+const sunGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: canvasTex(128,128,(g,w,h)=>{
+    const gr = g.createRadialGradient(w/2,h/2,4,w/2,h/2,w/2);
+    gr.addColorStop(0,"rgba(255,246,210,1)"); gr.addColorStop(.25,"rgba(255,236,170,.85)");
+    gr.addColorStop(1,"rgba(255,236,170,0)");
+    g.fillStyle = gr; g.fillRect(0,0,w,h);
+  }), transparent:true, depthWrite:false }));
+sunGlow.position.set(26, 30, -120);
+sunGlow.scale.set(46, 46, 1);
+scene.add(sunGlow);
+
+// ---------- ПАЛИТРА ----------
+const P = {
+  snow: 0xffffff, snowShade: 0xe8f2ff,
+  ink: 0x2a3160,
+  skin: 0x56b7e6, hair: 0xcdf24b, jeans: 0x2a6cf0,
+  mint: 0xa9e8c8, mint2: 0x8ed8b2, lime: 0xC0FF3F,
+  pink: 0xffb3d5, pink2: 0xff8fbe, peach: 0xffd9b8, cream: 0xfff6e8,
+  blue: 0x7ec3ff, brown: 0xc79a72,
+};
+function mat(color, opts){ return new THREE.MeshStandardMaterial(Object.assign({ color, roughness:.85, metalness:0 }, opts||{})); }
+function softMesh(geo, m, cast, recv){
+  const mesh = new THREE.Mesh(geo, m);
+  mesh.castShadow = cast !== false;
+  mesh.receiveShadow = !!recv;
+  return mesh;
 }
-// окна небоскрёбов
-function windowsTex(base, lit){
-  return canvasTex(128, 256, (g,w,h) => {
-    g.fillStyle = base; g.fillRect(0,0,w,h);
-    for (let y=8; y<h-8; y+=18)
-      for (let x=8; x<w-8; x+=16){
-        const on = Math.random() < 0.42;
-        g.fillStyle = on ? pick(lit) : "rgba(255,255,255,.05)";
-        g.fillRect(x, y, 9, 11);
-      }
-  });
-}
-// свитер с цветочками
-const sweaterTex = canvasTex(128, 128, (g,w,h) => {
-  g.fillStyle = "#101018"; g.fillRect(0,0,w,h);
-  for (let i=0;i<14;i++){
-    const x = rnd(8,120), y = rnd(8,120), r = rnd(4,6);
-    g.fillStyle = Math.random()<.5 ? "#C0FF3F" : "#4a9df0";
-    for (let p=0;p<5;p++){
-      const a = p*Math.PI*2/5;
-      g.beginPath(); g.arc(x+Math.cos(a)*r, y+Math.sin(a)*r, r*0.62, 0, 7); g.fill();
-    }
-    g.fillStyle = "#101018";
-    g.beginPath(); g.arc(x, y, r*0.45, 0, 7); g.fill();
+
+// ---------- ЗЕМЛЯ И ТРАССА ----------
+// снежная равнина
+const groundTex = canvasTex(256, 256, (g,w,h) => {
+  g.fillStyle = "#ffffff"; g.fillRect(0,0,w,h);
+  for (let i=0;i<420;i++){
+    g.fillStyle = `rgba(190,215,255,${rnd(.05,.16)})`;
+    g.beginPath(); g.arc(rnd(0,w), rnd(0,h), rnd(1,3.4), 0, 7); g.fill();
   }
 });
-// дорога: камень + пунктир полос + неоновая река по центру
+groundTex.wrapS = groundTex.wrapT = THREE.RepeatWrapping;
+groundTex.repeat.set(20, 60);
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(160, 320), mat(P.snow, { map:groundTex, roughness:1 }));
+ground.rotation.x = -Math.PI/2;
+ground.position.set(0, -0.02, -110);
+ground.receiveShadow = true;
+scene.add(ground);
+
+// утоптанная тропа: кремовый снег с голубыми точками полос и ручейком света
 const roadTex = canvasTex(256, 512, (g,w,h) => {
-  g.fillStyle = "#12142e"; g.fillRect(0,0,w,h);
-  for (let i=0;i<260;i++){
-    g.fillStyle = `rgba(255,255,255,${rnd(.015,.05)})`;
-    g.fillRect(rnd(0,w), rnd(0,h), rnd(2,7), rnd(2,5));
+  g.fillStyle = "#fdf1dc"; g.fillRect(0,0,w,h);
+  for (let i=0;i<240;i++){
+    g.fillStyle = `rgba(226,196,150,${rnd(.08,.2)})`;
+    g.beginPath(); g.arc(rnd(0,w), rnd(0,h), rnd(1.4,4), 0, 7); g.fill();
   }
-  g.strokeStyle = "rgba(126,240,255,.5)"; g.lineWidth = 3; g.setLineDash([26,30]);
-  for (const x of [w*0.335, w*0.665]){
-    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
-  }
-  g.setLineDash([]);
+  // пунктирные полосы — «пуговки»
+  g.fillStyle = "rgba(120,165,240,.5)";
+  for (const x of [w*0.335, w*0.665])
+    for (let y=12; y<h; y+=44){ g.beginPath(); g.arc(x, y, 5, 0, 7); g.fill(); }
+  // ручеёк света по центру
   const grd = g.createLinearGradient(w*0.42,0,w*0.58,0);
-  grd.addColorStop(0,"rgba(5,54,212,0)"); grd.addColorStop(.5,"rgba(126,240,255,.30)"); grd.addColorStop(1,"rgba(5,54,212,0)");
+  grd.addColorStop(0,"rgba(126,240,255,0)"); grd.addColorStop(.5,"rgba(126,240,255,.4)"); grd.addColorStop(1,"rgba(126,240,255,0)");
   g.fillStyle = grd; g.fillRect(w*0.42, 0, w*0.16, h);
 });
 roadTex.wrapS = roadTex.wrapT = THREE.RepeatWrapping;
 roadTex.repeat.set(1, 14);
-// далёкий силуэт города
-const skylineTex = canvasTex(1024, 256, (g,w,h) => {
-  g.clearRect(0,0,w,h);
-  let x = 0;
-  while (x < w){
-    const bw = rnd(30,80), bh = rnd(60,210);
-    g.fillStyle = "#0d1030";
-    g.fillRect(x, h-bh, bw, bh);
-    g.fillStyle = pick(["rgba(255,126,193,.8)","rgba(126,240,255,.8)","rgba(192,255,63,.6)"]);
-    if (Math.random()<.7) g.fillRect(x+rnd(4,bw-8), h-bh+rnd(4,20), rnd(3,7), rnd(12,40));
-    for (let i=0;i<bw*bh/300;i++){
-      g.fillStyle = `rgba(255,190,110,${rnd(.2,.7)})`;
-      g.fillRect(x+rnd(2,bw-4), h-bh+rnd(4,bh-6), 2, 3);
+const road = new THREE.Mesh(new THREE.PlaneGeometry(8.4, 260), mat(0xffffff, { map:roadTex, roughness:.95 }));
+road.rotation.x = -Math.PI/2;
+road.position.set(0, 0, -105);
+road.receiveShadow = true;
+scene.add(road);
+
+// мягкие карамельные бордюры-валики
+const curbGeo = new THREE.CylinderGeometry(0.22, 0.22, 260, 12);
+for (const [x, c] of [[-4.3, P.pink],[4.3, P.blue]]){
+  const curb = softMesh(curbGeo, mat(c, { roughness:.7 }), true, true);
+  curb.rotation.x = Math.PI/2;
+  curb.position.set(x, 0.16, -105);
+  scene.add(curb);
+}
+
+// ---------- ДЕКОР: ЁЛКИ, ДОМИКИ, ЛЕДЕНЦЫ, ОБЛАКА ----------
+const sceneryPool = [];
+function felterTree(){
+  const g = new THREE.Group();
+  const c1 = pick([0x7fd89a, 0x8fdf7f, 0x6fcf9f, 0x9fe86f]);
+  const s1 = softMesh(new THREE.SphereGeometry(1.15, 12, 10), mat(c1)); s1.position.y = 1.0; s1.scale.y = .8;
+  const s2 = softMesh(new THREE.SphereGeometry(0.85, 12, 10), mat(c1)); s2.position.y = 1.85; s2.scale.y = .8;
+  const s3 = softMesh(new THREE.SphereGeometry(0.55, 12, 10), mat(c1)); s3.position.y = 2.5; s3.scale.y = .85;
+  const cap = softMesh(new THREE.SphereGeometry(0.34, 10, 8), mat(0xffffff)); cap.position.y = 2.86; cap.scale.y = .6;
+  const trunk = softMesh(new THREE.CylinderGeometry(0.16,0.2,0.5,8), mat(P.brown)); trunk.position.y = 0.22;
+  g.add(trunk, s1, s2, s3, cap);
+  const k = rnd(0.7, 1.5); g.scale.set(k,k,k);
+  return g;
+}
+function candyHouse(){
+  const g = new THREE.Group();
+  const bodyC = pick([P.cream, P.peach, 0xdff0ff, 0xffe3ec]);
+  const roofC = pick([P.pink2, 0xff8f8f, 0x8ed8b2, 0x7ec3ff]);
+  const w = rnd(2.6,3.6), d = rnd(2.4,3.2), hh = rnd(1.8,2.6);
+  const body = softMesh(new THREE.BoxGeometry(w, hh, d), mat(bodyC, { roughness:.9 }));
+  body.position.y = hh/2;
+  const roof = softMesh(new THREE.CylinderGeometry(d*0.52, d*0.52, w*1.06, 3, 1), mat(roofC));
+  roof.rotation.z = Math.PI/2; roof.rotation.x = Math.PI;
+  roof.position.y = hh + d*0.2; roof.scale.y = 1;
+  const snowCap = softMesh(new THREE.SphereGeometry(d*0.5, 10, 6), mat(0xffffff));
+  snowCap.position.y = hh + d*0.34; snowCap.scale.set(1.1, .35, 1.02);
+  const win = new THREE.Mesh(new THREE.PlaneGeometry(0.5,0.6),
+    new THREE.MeshStandardMaterial({ color:0xfff0b0, emissive:0xffc258, emissiveIntensity:.9 }));
+  win.position.set(0, hh*0.55, d/2+0.01);
+  const win2 = win.clone(); win2.position.x = -w*0.28; win.position.x = w*0.28;
+  const door = new THREE.Mesh(new THREE.PlaneGeometry(0.55,0.9), mat(P.brown));
+  door.position.set(0, 0.45, d/2+0.01);
+  g.add(body, roof, snowCap, win, win2, door);
+  return g;
+}
+function lollipop(){
+  const g = new THREE.Group();
+  const pole = softMesh(new THREE.CylinderGeometry(0.09,0.09,2.6,8), mat(0xffffff));
+  pole.position.y = 1.3;
+  const pop = softMesh(new THREE.SphereGeometry(0.42,12,10), mat(pick([P.pink2, P.lime, P.blue]), { roughness:.5 }));
+  pop.position.y = 2.75;
+  g.add(pole, pop);
+  return g;
+}
+function snowman(){
+  const g = new THREE.Group();
+  const b1 = softMesh(new THREE.SphereGeometry(0.55,12,10), mat(0xffffff)); b1.position.y = 0.5;
+  const b2 = softMesh(new THREE.SphereGeometry(0.38,12,10), mat(0xffffff)); b2.position.y = 1.25;
+  const nose = softMesh(new THREE.ConeGeometry(0.07,0.3,8), mat(0xff9a55)); nose.rotation.x = Math.PI/2;
+  nose.position.set(0, 1.28, 0.4);
+  const hat = softMesh(new THREE.SphereGeometry(0.22,10,8), mat(P.pink2)); hat.position.y = 1.58; hat.scale.y = .6;
+  g.add(b1,b2,nose,hat);
+  return g;
+}
+for (let side=-1; side<=1; side+=2){
+  for (let i=0;i<16;i++){
+    const r = Math.random();
+    const item = r < .5 ? felterTree() : r < .72 ? candyHouse() : r < .88 ? lollipop() : snowman();
+    item.position.set(side*rnd(6.6,13), 0, -i*11 + rnd(-3,3));
+    if (item.children[0].geometry instanceof THREE.BoxGeometry) item.rotation.y = side<0 ? .35 : -.35;
+    scene.add(item); sceneryPool.push(item);
+  }
+}
+// облака
+const clouds = [];
+for (let i=0;i<9;i++){
+  const g = new THREE.Group();
+  const cmat = mat(0xffffff, { roughness:1, fog:false });
+  for (let p=0;p<4;p++){
+    const s = new THREE.Mesh(new THREE.SphereGeometry(rnd(1.4,2.4),10,8), cmat);
+    s.position.set(p*rnd(1.2,2)-3, rnd(-.3,.4), rnd(-.6,.6));
+    s.scale.y = .55; g.add(s);
+  }
+  g.position.set(rnd(-45,45), rnd(14,26), -rnd(40,160));
+  g.userData.v = rnd(.2,.6);
+  scene.add(g); clouds.push(g);
+}
+// снежинки
+const snowN = 400;
+const snowGeo = new THREE.BufferGeometry();
+const snowPos = new Float32Array(snowN*3);
+for (let i=0;i<snowN;i++){
+  snowPos[i*3] = rnd(-25,25); snowPos[i*3+1] = rnd(0,20); snowPos[i*3+2] = rnd(-80,12);
+}
+snowGeo.setAttribute("position", new THREE.BufferAttribute(snowPos, 3));
+const snowPts = new THREE.Points(snowGeo, new THREE.PointsMaterial({ color:0xffffff, size:.16, transparent:true, opacity:.95 }));
+scene.add(snowPts);
+
+// ---------- РИЗИ (мягкая кукла из капсул) ----------
+const sweaterTex = canvasTex(128, 128, (g,w,h) => {
+  g.fillStyle = "#191926"; g.fillRect(0,0,w,h);
+  for (let i=0;i<15;i++){
+    const x = rnd(8,120), y = rnd(8,120), r = rnd(4.5,6.5);
+    g.fillStyle = Math.random()<.5 ? "#C0FF3F" : "#5aa6f0";
+    for (let p=0;p<5;p++){
+      const a = p*Math.PI*2/5;
+      g.beginPath(); g.arc(x+Math.cos(a)*r, y+Math.sin(a)*r, r*0.62, 0, 7); g.fill();
     }
-    x += bw + rnd(2,10);
+    g.fillStyle = "#191926";
+    g.beginPath(); g.arc(x, y, r*0.45, 0, 7); g.fill();
   }
 });
-
-// ---------- РИЗИ (процедурная low-poly кукла) ----------
 function buildRizy(){
   const M = {
-    skin:  new THREE.MeshStandardMaterial({ color:COL.skin, roughness:.6 }),
-    hair:  new THREE.MeshStandardMaterial({ color:COL.hair, roughness:.55 }),
-    sweater:new THREE.MeshStandardMaterial({ map:sweaterTex, roughness:.8 }),
-    jeans: new THREE.MeshStandardMaterial({ color:COL.jeans, roughness:.7 }),
-    shoe:  new THREE.MeshStandardMaterial({ color:0x15151d, roughness:.5 }),
-    sole:  new THREE.MeshStandardMaterial({ color:0xf2f2f2, roughness:.5 }),
-    pack:  new THREE.MeshStandardMaterial({ color:0x2a7de0, roughness:.6 }),
+    skin: mat(P.skin, { roughness:.55 }),
+    hair: mat(P.hair, { roughness:.5 }),
+    sweater: mat(0xffffff, { map:sweaterTex, roughness:.85 }),
+    jeans: mat(P.jeans, { roughness:.7 }),
+    shoe: mat(0x23233a, { roughness:.5 }),
+    pack: mat(0x4a90e8, { roughness:.6 }),
   };
-  const g = new THREE.Group();          // корень (позиция на земле)
-  const body = new THREE.Group();       // корпус для наклона/приседа
+  const g = new THREE.Group();
+  const body = new THREE.Group();
   g.add(body);
 
-  // ноги (пивот у бедра)
   function leg(side){
     const hip = new THREE.Group();
-    hip.position.set(0.11*side, 0.86, 0);
-    const thigh = new THREE.Mesh(new THREE.BoxGeometry(0.15,0.5,0.19), M.jeans);
-    thigh.position.y = -0.25; hip.add(thigh);
-    const shin = new THREE.Group(); shin.position.y = -0.48; hip.add(shin);
-    const calf = new THREE.Mesh(new THREE.BoxGeometry(0.13,0.38,0.16), M.jeans);
-    calf.position.y = -0.17; shin.add(calf);
-    const shoe = new THREE.Mesh(new THREE.BoxGeometry(0.16,0.1,0.3), M.shoe);
-    shoe.position.set(0, -0.36, 0.05); shin.add(shoe);
-    const sole = new THREE.Mesh(new THREE.BoxGeometry(0.17,0.04,0.31), M.sole);
-    sole.position.set(0, -0.42, 0.05); shin.add(sole);
+    hip.position.set(0.115*side, 0.88, 0);
+    const thigh = softMesh(new THREE.CapsuleGeometry(0.085, 0.32, 4, 8), M.jeans);
+    thigh.position.y = -0.22; hip.add(thigh);
+    const shin = new THREE.Group(); shin.position.y = -0.47; hip.add(shin);
+    const calf = softMesh(new THREE.CapsuleGeometry(0.075, 0.24, 4, 8), M.jeans);
+    calf.position.y = -0.15; shin.add(calf);
+    const shoe = softMesh(new THREE.SphereGeometry(0.11, 10, 8), M.shoe);
+    shoe.position.set(0, -0.36, 0.06); shoe.scale.set(1, .75, 1.5); shin.add(shoe);
     return { hip, shin };
   }
   const L = leg(-1), R = leg(1);
   body.add(L.hip, R.hip);
 
-  // торс
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.52,0.6,0.3), M.sweater);
+  const torso = softMesh(new THREE.CapsuleGeometry(0.26, 0.34, 6, 12), M.sweater);
   torso.position.y = 1.16; body.add(torso);
-  // рюкзак (виден со спины — камера сзади)
-  const pack = new THREE.Mesh(new THREE.BoxGeometry(0.3,0.36,0.13), M.pack);
-  pack.position.set(0, 1.2, 0.21); body.add(pack);
+  const pack = softMesh(new THREE.CapsuleGeometry(0.15, 0.2, 4, 8), M.pack);
+  pack.position.set(0, 1.2, 0.24); body.add(pack);
 
-  // руки (пивот у плеча)
   function arm(side){
     const sh = new THREE.Group();
-    sh.position.set(0.31*side, 1.4, 0);
-    const up = new THREE.Mesh(new THREE.BoxGeometry(0.12,0.34,0.15), M.sweater);
-    up.position.y = -0.16; sh.add(up);
-    const lo = new THREE.Group(); lo.position.y = -0.33; sh.add(lo);
-    const fore = new THREE.Mesh(new THREE.BoxGeometry(0.11,0.3,0.13), M.sweater);
-    fore.position.y = -0.13; lo.add(fore);
-    const hand = new THREE.Mesh(new THREE.SphereGeometry(0.07,8,8), M.skin);
-    hand.position.y = -0.3; lo.add(hand);
-    lo.rotation.x = -0.7;   // согнутый локоть, беговая рука
+    sh.position.set(0.3*side, 1.38, 0);
+    const up = softMesh(new THREE.CapsuleGeometry(0.065, 0.2, 4, 8), M.sweater);
+    up.position.y = -0.14; sh.add(up);
+    const lo = new THREE.Group(); lo.position.y = -0.3; sh.add(lo);
+    const fore = softMesh(new THREE.CapsuleGeometry(0.058, 0.16, 4, 8), M.sweater);
+    fore.position.y = -0.1; lo.add(fore);
+    const hand = softMesh(new THREE.SphereGeometry(0.07,8,8), M.skin);
+    hand.position.y = -0.24; lo.add(hand);
+    lo.rotation.x = -0.7;
     return sh;
   }
   const AL = arm(-1), AR = arm(1);
   body.add(AL, AR);
 
-  // голова
-  const headG = new THREE.Group(); headG.position.y = 1.64; body.add(headG);
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.25,16,14), M.skin);
+  const headG = new THREE.Group(); headG.position.y = 1.66; body.add(headG);
+  const head = softMesh(new THREE.SphereGeometry(0.25,16,14), M.skin);
   headG.add(head);
-  // каре: шапка волос + «стенки» каре по бокам и сзади до подбородка
-  const hairCap = new THREE.Mesh(new THREE.SphereGeometry(0.265,16,14), M.hair);
+  const hairCap = softMesh(new THREE.SphereGeometry(0.265,16,14), M.hair);
   hairCap.position.set(0, 0.07, 0.02);
   hairCap.scale.set(1.0, 0.78, 1.0);
   headG.add(hairCap);
-  const bobBack = new THREE.Mesh(new THREE.BoxGeometry(0.44, 0.34, 0.14), M.hair);
-  bobBack.position.set(0, -0.05, 0.17); headG.add(bobBack);
-  const bobL = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.34, 0.3), M.hair);
-  bobL.position.set(-0.21, -0.05, 0.05);
+  const bobBack = softMesh(new THREE.CapsuleGeometry(0.2, 0.14, 4, 10), M.hair);
+  bobBack.position.set(0, -0.04, 0.14); bobBack.scale.set(1.15, 1, 0.6);
+  headG.add(bobBack);
+  const bobL = softMesh(new THREE.CapsuleGeometry(0.07, 0.16, 4, 8), M.hair);
+  bobL.position.set(-0.21, -0.03, 0.04);
   const bobR = bobL.clone(); bobR.position.x = 0.21;
   headG.add(bobL, bobR);
-  const bangs = new THREE.Mesh(new THREE.BoxGeometry(0.4,0.1,0.1), M.hair);
-  bangs.position.set(0, 0.15, -0.19); headG.add(bangs);
-  const bunL = new THREE.Mesh(new THREE.SphereGeometry(0.075,10,10), M.hair);
+  const bangs = softMesh(new THREE.SphereGeometry(0.2, 12, 8), M.hair);
+  bangs.position.set(0, 0.13, -0.14); bangs.scale.set(1.1, .5, .7);
+  headG.add(bangs);
+  const bunL = softMesh(new THREE.SphereGeometry(0.08,10,10), M.hair);
   bunL.position.set(-0.13, 0.27, 0.03);
   const bunR = bunL.clone(); bunR.position.x = 0.13;
   headG.add(bunL, bunR);
 
-  g.rotation.y = Math.PI;   // бежит от камеры (в -z)
+  g.rotation.y = Math.PI;
   return { g, body, L, R, AL, AR, headG, bunL, bunR };
 }
 const rizy = buildRizy();
 scene.add(rizy.g);
 
-// ---------- РОЙ ГАСИТЕЛЕЙ ----------
+// ---------- РОЙ ГАСИТЕЛЕЙ (тёмные помпоны с красным глазом) ----------
 const swarm = new THREE.Group();
-const kubitEyeMat = new THREE.MeshStandardMaterial({ color:0x330000, emissive:0xff2233, emissiveIntensity:2.4 });
-const kubitBodyMat = new THREE.MeshStandardMaterial({ color:0x0c0c14, roughness:.4, metalness:.3 });
 const kubits = [];
-for (let i=0;i<14;i++){
+const kubitMat = mat(0x2b2b40, { roughness:.9 });
+const kubitEye = new THREE.MeshStandardMaterial({ color:0x550000, emissive:0xff3344, emissiveIntensity:2.2 });
+for (let i=0;i<13;i++){
   const k = new THREE.Group();
-  const b = new THREE.Mesh(new THREE.BoxGeometry(0.34,0.34,0.34), kubitBodyMat);
-  const e = new THREE.Mesh(new THREE.SphereGeometry(0.08,8,8), kubitEyeMat);
-  e.position.set(0, 0, -0.19);
-  k.add(b, e);
-  // рой ЛЕТИТ над дорогой — не ниже метра, кучно, как туча
-  k.userData = { ox: rnd(-2.1,2.1), oy: rnd(1.1,2.9), oz: rnd(-0.7,0.7), ph: rnd(0,7), sp: rnd(2,4) };
+  const b = softMesh(new THREE.SphereGeometry(0.21, 10, 8), kubitMat, false);
+  const e = new THREE.Mesh(new THREE.SphereGeometry(0.075,8,8), kubitEye);
+  e.position.set(0, 0, -0.15);
+  const wing1 = new THREE.Mesh(new THREE.SphereGeometry(0.08,6,6), kubitMat);
+  wing1.position.set(-0.22, 0.12, 0); wing1.scale.set(1.4,.3,.8);
+  const wing2 = wing1.clone(); wing2.position.x = 0.22;
+  k.add(b, e, wing1, wing2);
+  k.userData = { ox: rnd(-2.1,2.1), oy: rnd(1.2,3.0), oz: rnd(-0.7,0.7), ph: rnd(0,7), sp: rnd(2,4) };
   swarm.add(k); kubits.push(k);
 }
 scene.add(swarm);
 
-// ---------- ДОРОГА И ГОРОД ----------
-const road = new THREE.Mesh(
-  new THREE.PlaneGeometry(8.2, 260),
-  new THREE.MeshStandardMaterial({ map:roadTex, roughness:.9 })
-);
-road.rotation.x = -Math.PI/2;
-road.position.z = -105;
-scene.add(road);
-
-// Неоновая река — светящийся поток по центру дороги
-const riverMat = new THREE.MeshBasicMaterial({ color:0x7ef0ff, transparent:true, opacity:.32,
-  blending:THREE.AdditiveBlending, depthWrite:false });
-const river = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 260), riverMat);
-river.rotation.x = -Math.PI/2;
-river.position.set(0, 0.02, -105);
-scene.add(river);
-const river2 = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 260),
-  new THREE.MeshBasicMaterial({ color:0xffffff, transparent:true, opacity:.25,
-    blending:THREE.AdditiveBlending, depthWrite:false }));
-river2.rotation.x = -Math.PI/2;
-river2.position.set(0, 0.03, -105);
-scene.add(river2);
-
-// холодная подсветка Ризи, чтобы она читалась на тёмной дороге
-const rim = new THREE.PointLight(0x9ef4ff, 0.9, 9);
-rim.position.set(0, 3, 1.2);
-scene.add(rim);
-
-// светящиеся бордюры
-const curbMatC = new THREE.MeshStandardMaterial({ color:0x061224, emissive:COL.cyan, emissiveIntensity:.9 });
-const curbMatP = new THREE.MeshStandardMaterial({ color:0x120618, emissive:COL.pink, emissiveIntensity:.9 });
-for (const [x, m] of [[-4.25, curbMatC],[4.25, curbMatP]]){
-  const curb = new THREE.Mesh(new THREE.BoxGeometry(0.3,0.18,260), m);
-  curb.position.set(x, 0.09, -105);
-  scene.add(curb);
-}
-
-// снег за обочиной
-const snowGround = new THREE.Mesh(
-  new THREE.PlaneGeometry(90, 260),
-  new THREE.MeshStandardMaterial({ color:0x1a1f4a, roughness:1 })
-);
-snowGround.rotation.x = -Math.PI/2;
-snowGround.position.set(0, -0.04, -105);
-scene.add(snowGround);
-
-// здания по бокам (пул, рециркуляция)
-const buildings = [];
-const winTexA = windowsTex("#0b0e28", ["rgba(255,190,110,.85)","rgba(126,240,255,.7)"]);
-const winTexB = windowsTex("#0d0a24", ["rgba(255,126,193,.8)","rgba(255,190,110,.8)"]);
-const signMats = [COL.pink, COL.cyan, COL.lime].map(c =>
-  new THREE.MeshStandardMaterial({ color:0x111, emissive:c, emissiveIntensity:1.6, side:THREE.DoubleSide }));
-for (let side=-1; side<=1; side+=2){
-  for (let i=0;i<22;i++){
-    const w = rnd(4,7), h = rnd(7,26), d = rnd(4,7);
-    const b = new THREE.Mesh(
-      new THREE.BoxGeometry(w,h,d),
-      new THREE.MeshStandardMaterial({ map: Math.random()<.5?winTexA:winTexB, roughness:.9 })
-    );
-    b.position.set(side*rnd(7.6,11), h/2-0.1, -i*8.5 + rnd(-2,2));
-    scene.add(b); buildings.push(b);
-    if (Math.random() < .4){
-      const sign = new THREE.Mesh(new THREE.PlaneGeometry(0.5, rnd(2,4)), pick(signMats));
-      sign.position.set(side*(Math.abs(b.position.x)-w/2-0.05), rnd(3,h*0.8), b.position.z);
-      sign.rotation.y = side<0 ? Math.PI/2 : -Math.PI/2;
-      scene.add(sign); sign.userData.follow = b; b.userData.sign = sign;
-      sign.userData.dx = sign.position.x - b.position.x;
-      sign.userData.dy = sign.position.y;
-    }
-  }
-}
-// фонари вдоль трека
-const lamps = [];
-const lampMat = new THREE.MeshStandardMaterial({ color:0x222533, roughness:.6 });
-const lampGlow = new THREE.MeshStandardMaterial({ color:0x111, emissive:0xffc98a, emissiveIntensity:2 });
-for (let i=0;i<14;i++){
-  const g = new THREE.Group();
-  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06,0.08,3.4,6), lampMat);
-  pole.position.y = 1.7;
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.16,8,8), lampGlow);
-  head.position.y = 3.4;
-  g.add(pole, head);
-  g.position.set((i%2 ? 4.9 : -4.9), 0, -i*14);
-  scene.add(g); lamps.push(g);
-}
-// далёкий город
-const skyline = new THREE.Mesh(
-  new THREE.PlaneGeometry(240, 60),
-  new THREE.MeshBasicMaterial({ map:skylineTex, transparent:true, fog:false })
-);
-skyline.position.set(0, 18, -190);
-scene.add(skyline);
-// снегопад
-const snowGeo = new THREE.BufferGeometry();
-const snowN = 700, snowPos = new Float32Array(snowN*3);
-for (let i=0;i<snowN;i++){
-  snowPos[i*3] = rnd(-30,30); snowPos[i*3+1] = rnd(0,25); snowPos[i*3+2] = rnd(-90,12);
-}
-snowGeo.setAttribute("position", new THREE.BufferAttribute(snowPos, 3));
-const snow = new THREE.Points(snowGeo, new THREE.PointsMaterial({ color:0xdde6ff, size:.12, transparent:true, opacity:.8 }));
-scene.add(snow);
-
 // ---------- ПРЕПЯТСТВИЯ И ЭНЕРГОНЫ ----------
 const LANES = [-2.55, 0, 2.55];
-const obstacles = [];   // активные
+const obstacles = [];
 const coins = [];
 
-const barrierMat = new THREE.MeshStandardMaterial({ color:0x131735, emissive:COL.blue, emissiveIntensity:.55, roughness:.5 });
-const pylonMat = new THREE.MeshStandardMaterial({ color:0x191d3d, roughness:.5, metalness:.4 });
-const laserMat = new THREE.MeshStandardMaterial({ color:0x220008, emissive:0xff2255, emissiveIntensity:3 });
-const capsuleMat = new THREE.MeshStandardMaterial({ color:0x0e1b3a, emissive:0x1f5cff, emissiveIntensity:.35, roughness:.35, transparent:true, opacity:.92 });
-const coinMat = new THREE.MeshStandardMaterial({ color:0x5a0f33, emissive:COL.pink, emissiveIntensity:1.6 });
-const coinGeo = new THREE.CylinderGeometry(0.26, 0.26, 0.1, 6);
+const rollMatA = mat(P.pink, { roughness:.75 });
+const rollMatB = mat(0xffffff, { roughness:.75 });
+const poleMat = mat(0xffffff, { roughness:.6 });
+const poleStripe = mat(P.pink2, { roughness:.6 });
+const scarfMat = mat(P.lime, { roughness:.8 });
+const moundMat = mat(0xffffff, { roughness:1 });
+const coinMat = new THREE.MeshStandardMaterial({ color:0xd1387f, emissive:0xff7ec1, emissiveIntensity:.9, roughness:.4 });
+const coinGeo = new THREE.CylinderGeometry(0.28, 0.28, 0.12, 6);
 
-function mkBarrier(lane){
+// валик — перепрыгнуть
+function mkRoll(lane){
   const g = new THREE.Group();
-  const bar = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.22, 0.22), barrierMat);
-  bar.position.y = 0.95;
-  const p1 = new THREE.Mesh(new THREE.BoxGeometry(0.16,1.0,0.16), pylonMat); p1.position.set(-1, .5, 0);
-  const p2 = p1.clone(); p2.position.x = 1;
-  const bar2 = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.12, 0.12), barrierMat);
-  bar2.position.y = 0.55;
-  g.add(bar, bar2, p1, p2);
+  for (let i=0;i<5;i++){
+    const seg = softMesh(new THREE.CylinderGeometry(0.34,0.34,0.44,12), i%2 ? rollMatA : rollMatB);
+    seg.rotation.z = Math.PI/2;
+    seg.position.set(-0.88 + i*0.44, 0.36, 0);
+    g.add(seg);
+  }
+  const capL = softMesh(new THREE.SphereGeometry(0.34,10,8), rollMatB); capL.position.set(-1.1, .36, 0);
+  const capR = capL.clone(); capR.position.x = 1.1;
+  g.add(capL, capR);
   g.position.x = LANES[lane];
-  g.userData = { kind:"jump", lanes:[lane], zLen:0.5 };
+  g.userData = { kind:"jump", lanes:[lane], zLen:0.8 };
   return g;
 }
-function mkLaser(lanes){
+// гирлянда — подкат
+function mkGarland(lanes){
   const g = new THREE.Group();
   const x1 = LANES[lanes[0]] - 1.3, x2 = LANES[lanes[lanes.length-1]] + 1.3;
-  const p1 = new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.12,2.6,6), pylonMat);
-  p1.position.set(x1, 1.3, 0);
-  const p2 = p1.clone(); p2.position.x = x2;
-  const beam = new THREE.Mesh(new THREE.BoxGeometry(x2-x1, 0.07, 0.07), laserMat);
-  beam.position.set((x1+x2)/2, 1.42, 0);
-  g.add(p1, p2, beam);
-  g.userData = { kind:"slide", lanes:[...lanes], zLen:0.4, beam };
+  function pole(x){
+    const pg = new THREE.Group();
+    for (let i=0;i<6;i++){
+      const seg = softMesh(new THREE.CylinderGeometry(0.1,0.1,0.45,8), i%2 ? poleMat : poleStripe);
+      seg.position.y = 0.22 + i*0.45;
+      pg.add(seg);
+    }
+    const top = softMesh(new THREE.SphereGeometry(0.16,8,8), poleStripe); top.position.y = 2.85;
+    pg.add(top);
+    pg.position.x = x;
+    return pg;
+  }
+  g.add(pole(x1), pole(x2));
+  // мягкий «шарф» между столбами — под ним подкат
+  const scarf = softMesh(new THREE.BoxGeometry(x2-x1, 0.34, 0.1), scarfMat);
+  scarf.position.y = 1.42;
+  g.add(scarf);
+  for (let i=0;i<7;i++){
+    const t = i/6;
+    const bulb = softMesh(new THREE.SphereGeometry(0.09,8,8),
+      mat(pick([P.pink2, P.blue, P.lime, 0xffd166]), { roughness:.4 }));
+    bulb.position.set(x1 + (x2-x1)*t, 1.2 - Math.sin(t*Math.PI)*0.12, 0);
+    g.add(bulb);
+  }
+  g.userData = { kind:"slide", lanes:[...lanes], zLen:0.5 };
   return g;
 }
-function mkCapsule(lane){
+// сугроб с ёлочкой — обежать
+function mkMound(lane){
   const g = new THREE.Group();
-  const cap = new THREE.Mesh(new THREE.CapsuleGeometry(0.62, 1.4, 6, 12), capsuleMat);
-  cap.position.y = 1.35;
-  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.75,0.85,0.25,10), pylonMat);
-  base.position.y = 0.12;
-  g.add(cap, base);
+  const mound = softMesh(new THREE.SphereGeometry(0.95, 14, 10), moundMat);
+  mound.position.y = 0.35; mound.scale.set(1.05, .75, .9);
+  const tree = felterTree();
+  tree.scale.set(0.55, 0.55, 0.55);
+  tree.position.y = 0.55;
+  g.add(mound, tree);
   g.position.x = LANES[lane];
-  g.userData = { kind:"wall", lanes:[lane], zLen:1.2 };
+  g.userData = { kind:"wall", lanes:[lane], zLen:1.3 };
   return g;
 }
 function spawnObstacle(z){
   const r = Math.random();
   let g;
-  if (r < 0.34) g = mkBarrier(Math.floor(rnd(0,3)));
-  else if (r < 0.6){
-    const set = pick([[0],[1],[2],[0,1],[1,2],[0,1,2]]);
-    g = mkLaser(set);
-  } else {
-    // капсулы: 1 или 2 полосы, но хотя бы одна свободна
+  if (r < 0.36) g = mkRoll(Math.floor(rnd(0,3)));
+  else if (r < 0.62) g = mkGarland(pick([[0],[1],[2],[0,1],[1,2],[0,1,2]]));
+  else {
     const lanes = pick([[0],[1],[2],[0,1],[1,2],[0,2]]);
     g = new THREE.Group();
-    for (const l of lanes) g.add(mkCapsule(l));
-    g.userData = { kind:"multi", parts: lanes };
+    for (const l of lanes) g.add(mkMound(l));
+    g.userData = { kind:"multi" };
   }
   g.position.z = z;
   scene.add(g); obstacles.push(g);
@@ -392,8 +436,9 @@ function spawnCoins(z){
   const n = arc ? 5 : 7;
   for (let i=0;i<n;i++){
     const c = new THREE.Mesh(coinGeo, coinMat);
+    c.castShadow = true;
     c.rotation.x = Math.PI/2;
-    const y = arc ? 0.8 + Math.sin(i/(n-1)*Math.PI)*1.1 : 0.85;
+    const y = arc ? 0.85 + Math.sin(i/(n-1)*Math.PI)*1.1 : 0.9;
     c.position.set(LANES[lane], y, z - i*1.35);
     scene.add(c); coins.push(c);
   }
@@ -402,9 +447,9 @@ function spawnCoins(z){
 // ---------- СОСТОЯНИЕ ----------
 const G = {
   mode:"title", dist:0, energons:0, best:0,
-  lane:1, x:0, py:0, vy:0, sliding:0, jumpHeld:false,
+  lane:1, x:0, py:0, vy:0, sliding:0,
   speed:13, runPhase:0, grace:0, swarmNear:0, shake:0,
-  nextObstacleZ:-40, nextCoinZ:-26,
+  nextObstacleZ:-46, nextCoinZ:-28,
 };
 try { G.best = +localStorage.getItem("rizyrun_best") || 0; } catch(e){}
 $("best").textContent = G.best;
@@ -432,32 +477,33 @@ addEventListener("keydown", ev => {
     if (ev.code === "Escape"){ $("over").style.display="none"; $("title").style.display="flex"; G.mode="title"; return; }
   }
   if (G.mode !== "play") return;
-  if (ev.code==="ArrowLeft"||ev.code==="KeyA"){ G.lane = clamp(G.lane-1,0,2); beep(300,.05,"square",.03); }
-  if (ev.code==="ArrowRight"||ev.code==="KeyD"){ G.lane = clamp(G.lane+1,0,2); beep(300,.05,"square",.03); }
+  if (ev.code==="ArrowLeft"||ev.code==="KeyA"){ G.lane = clamp(G.lane-1,0,2); beep(320,.05,"square",.03); }
+  if (ev.code==="ArrowRight"||ev.code==="KeyD"){ G.lane = clamp(G.lane+1,0,2); beep(320,.05,"square",.03); }
   if ((ev.code==="ArrowUp"||ev.code==="KeyW"||ev.code==="Space") && G.py<=0.01 && !G.sliding){
-    G.vy = 9.4; beep(430,.12,"sine",.05,220);
+    G.vy = 9.4; beep(460,.12,"sine",.05,240);
   }
   if ((ev.code==="ArrowDown"||ev.code==="KeyS") && G.py<=0.01 && !G.sliding){
-    G.sliding = 0.68; beep(200,.1,"sine",.04,-80);
+    G.sliding = 0.68; beep(210,.1,"sine",.04,-80);
   }
 });
 
 function startRun(){
   $("title").style.display = "none";
   $("over").style.display = "none";
+  $("alarm").style.display = "none";
   for (const o of obstacles) scene.remove(o);
   for (const c of coins) scene.remove(c);
   obstacles.length = 0; coins.length = 0;
   Object.assign(G, { mode:"play", dist:0, energons:0, lane:1, x:0, py:0, vy:0,
     sliding:0, speed:13, runPhase:0, grace:0, swarmNear:0, shake:0,
     nextObstacleZ:-46, nextCoinZ:-28 });
-  beep(520,.15,"triangle",.06,260);
+  beep(540,.15,"triangle",.06,280);
 }
 
 function gameOver(){
   G.mode = "over";
-  beep(300,.3,"sawtooth",.08,-160);
-  setTimeout(()=>beep(180,.5,"sawtooth",.07,-90), 220);
+  beep(300,.3,"sawtooth",.07,-160);
+  setTimeout(()=>beep(180,.5,"sawtooth",.06,-90), 220);
   const d = Math.floor(G.dist);
   $("finalDist").textContent = d;
   $("finalEn").textContent = G.energons;
@@ -475,6 +521,7 @@ function gameOver(){
     "Мисс Фантастика мурлычет. Энергия сердца восстановлена.",
   ]);
   $("over").style.display = "flex";
+  $("alarm").style.display = "none";
 }
 
 // ---------- КОЛЛИЗИИ ----------
@@ -483,16 +530,16 @@ function checkCollisions(){
     const parts = o.userData.kind === "multi" ? o.children : [o];
     for (const p of parts){
       const u = p.userData; if (!u || !u.kind || u.kind==="multi") continue;
-      const oz = (o.userData.kind==="multi" ? o.position.z : p.position.z);
+      const oz = o.position.z + (o.userData.kind==="multi" ? p.position.z : 0);
       if (Math.abs(oz) > (u.zLen/2 + 0.5)) continue;
       if (!u.lanes.includes(G.lane)) continue;
-      if (u.kind === "jump" && G.py < 0.85) return hit(p);
-      if (u.kind === "slide" && !G.sliding && G.py < 1.0) return hit(p);
-      if (u.kind === "wall") return hit(p);
+      if (u.kind === "jump" && G.py < 0.85) return hit();
+      if (u.kind === "slide" && !G.sliding && G.py < 1.0) return hit();
+      if (u.kind === "wall") return hit();
     }
   }
 }
-function hit(p){
+function hit(){
   if (G.grace > 0) return;
   G.grace = 1.6; G.shake = 0.7;
   G.speed = Math.max(12, G.speed*0.55);
@@ -504,6 +551,7 @@ function hit(p){
 
 // ---------- ЦИКЛ ----------
 let lastT = performance.now();
+let perf = 0;
 function step(now){
   let elapsed = Math.min(0.35, (now-lastT)/1000);
   lastT = now;
@@ -529,42 +577,32 @@ function update(dt){
     if (G.swarmNear <= 0) $("alarm").style.display = "none";
   }
 
-  // полоса и вертикаль
   G.x = lerp(G.x, LANES[G.lane], Math.min(1, dt*12));
   G.vy -= 24*dt;
   G.py = Math.max(0, G.py + G.vy*dt);
   if (G.py === 0) G.vy = 0;
   if (G.sliding > 0) G.sliding -= dt;
 
-  // движение мира
   roadTex.offset.y -= dz/18.5;
-  for (const b of buildings){
-    b.position.z += dz;
-    if (b.position.z > 14){
-      b.position.z -= 190;
-      const h = rnd(7,26);
-      b.scale.y = h / b.geometry.parameters.height;
-      b.position.y = (b.geometry.parameters.height*b.scale.y)/2 - 0.1;
-    }
-    if (b.userData.sign){
-      b.userData.sign.position.z = b.position.z;
-    }
-  }
-  for (const l of lamps){
-    l.position.z += dz;
-    if (l.position.z > 12) l.position.z -= 14*14;
-  }
-  // снегопад
-  const sp = snow.geometry.attributes.position.array;
-  for (let i=0;i<snowN;i++){
-    sp[i*3+1] -= dt*rnd(1.2,2.2);
-    sp[i*3+2] += dz*0.35;
-    if (sp[i*3+1] < 0){ sp[i*3+1] = rnd(18,25); }
-    if (sp[i*3+2] > 12){ sp[i*3+2] -= 100; }
-  }
-  snow.geometry.attributes.position.needsUpdate = true;
+  groundTex.offset.y -= dz/5.3;
 
-  // спавн
+  for (const s of sceneryPool){
+    s.position.z += dz;
+    if (s.position.z > 14) s.position.z -= 176;
+  }
+  for (const c of clouds){
+    c.position.x += c.userData.v * dt;
+    if (c.position.x > 50) c.position.x = -50;
+  }
+  const sp = snowPts.geometry.attributes.position.array;
+  for (let i=0;i<snowN;i++){
+    sp[i*3+1] -= dt*rnd(1.0,1.8);
+    sp[i*3+2] += dz*0.3;
+    if (sp[i*3+1] < 0) sp[i*3+1] = rnd(14,20);
+    if (sp[i*3+2] > 12) sp[i*3+2] -= 90;
+  }
+  snowPts.geometry.attributes.position.needsUpdate = true;
+
   G.nextObstacleZ += dz;
   if (G.nextObstacleZ > -40){
     spawnObstacle(-115 + rnd(-6,6));
@@ -576,11 +614,9 @@ function update(dt){
     G.nextCoinZ = -30 - rnd(20, 36);
   }
 
-  // движение препятствий/монет
   for (let i=obstacles.length-1;i>=0;i--){
     const o = obstacles[i];
     o.position.z += dz;
-    if (o.userData.beam) o.userData.beam.material.emissiveIntensity = 2.2 + Math.sin(perf*14)*1.2;
     if (o.position.z > 10){ scene.remove(o); obstacles.splice(i,1); }
   }
   for (let i=coins.length-1;i>=0;i--){
@@ -589,8 +625,8 @@ function update(dt){
     c.rotation.z += dt*3;
     if (Math.abs(c.position.z) < 0.7 &&
         Math.abs(c.position.x - G.x) < 0.9 &&
-        Math.abs(c.position.y - (0.85 + G.py)) < 1.0){
-      G.energons++; beep(880,.07,"triangle",.05,140);
+        Math.abs(c.position.y - (0.9 + G.py)) < 1.0){
+      G.energons++; beep(900,.07,"triangle",.05,150);
       scene.remove(c); coins.splice(i,1); continue;
     }
     if (c.position.z > 8){ scene.remove(c); coins.splice(i,1); }
@@ -598,15 +634,12 @@ function update(dt){
 
   checkCollisions();
 
-  // HUD
   $("score").childNodes[0].textContent = Math.floor(G.dist) + " м";
   $("energons").textContent = "⬡ " + G.energons;
 }
 
-let perf = 0;
 function idle(dt){
   perf += dt;
-  // Ризи: позиция и анимация
   rizy.g.position.x = G.x;
   rizy.g.position.y = G.py;
   const t = G.runPhase;
@@ -637,10 +670,7 @@ function idle(dt){
     rizy.AL.rotation.x = -s*0.95 - 0.1;
     rizy.AR.rotation.x = s*0.95 - 0.1;
     rizy.headG.rotation.x = s*0.04;
-    rizy.bunL.position.y = 0.24 + Math.abs(s)*0.02;
-    rizy.bunR.position.y = 0.24 + Math.abs(c)*0.02;
   } else {
-    // титул: лёгкое дыхание
     rizy.body.rotation.x = Math.sin(perf*1.6)*0.03;
     rizy.body.position.y = Math.sin(perf*2)*0.02;
     rizy.L.hip.rotation.x = rizy.R.hip.rotation.x = 0;
@@ -648,13 +678,10 @@ function idle(dt){
     rizy.AL.rotation.x = rizy.AR.rotation.x = 0;
   }
 
-  // рой: дистанция зависит от «близости»
   const nearK = G.swarmNear > 0 ? 1 : 0;
-  const baseZ = G.mode==="play" ? lerp(7.2, 3.4, nearK) : 5.2;
+  const baseZ = G.mode==="play" ? lerp(7.4, 3.4, nearK) : 5.4;
   swarm.position.z = lerp(swarm.position.z, baseZ, Math.min(1, dt*2.2));
   swarm.position.y = 0.4;
-  riverMat.opacity = 0.26 + Math.sin(perf*3)*0.08;
-  rim.position.x = G.x;
   for (const k of kubits){
     const u = k.userData;
     k.position.set(
@@ -665,13 +692,12 @@ function idle(dt){
     k.rotation.y = Math.sin(perf*u.sp + u.ph)*0.6;
   }
 
-  // камера: чуть за полосой, тряска при ударе
   if (G.shake > 0) G.shake -= dt;
   const shx = G.shake>0 ? (Math.random()-0.5)*0.25*G.shake : 0;
   const shy = G.shake>0 ? (Math.random()-0.5)*0.2*G.shake : 0;
   camera.position.x = lerp(camera.position.x, G.x*0.45 + shx, Math.min(1,dt*5));
-  camera.position.y = CAM_BASE.y + Math.sin(perf*1.2)*0.06 + shy + G.py*0.25;
-  camera.lookAt(G.x*0.6, 1.35 + G.py*0.4, -9);
+  camera.position.y = CAM_BASE.y + Math.sin(perf*1.2)*0.05 + shy + G.py*0.25;
+  camera.lookAt(G.x*0.6, 1.4 + G.py*0.4, -9);
 }
 
 function render(){ renderer.render(scene, camera); }

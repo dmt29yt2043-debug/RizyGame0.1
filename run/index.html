@@ -2,67 +2,77 @@
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
-<title>Ризи RUN: Неоновая река</title>
+<title>Ризи RUN: Снежная Река</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  html,body { height:100%; background:#06081f; overflow:hidden;
+  html,body { height:100%; background:#dff0ff; overflow:hidden;
               font-family:"Avenir Next","Nunito",system-ui,-apple-system,sans-serif; }
   #wrap { position:relative; width:100vw; height:100vh; }
   canvas { display:block; width:100%; height:100%; }
-  .ui { position:absolute; color:#fff; user-select:none; z-index:5; }
+  .ui { position:absolute; color:#070D36; user-select:none; z-index:5; }
 
-  #score { top:18px; left:22px; font-size:30px; font-weight:900;
-           text-shadow:0 0 18px #0536D4, 0 2px 6px #000; }
-  #score small { display:block; font-size:13px; font-weight:700; color:#9fb4ff; letter-spacing:.4px; }
-  #energons { top:18px; right:22px; font-size:22px; font-weight:800; color:#ffd7ea;
-              background:rgba(7,13,54,.55); border:2px solid #ff9ecb; border-radius:14px;
-              padding:6px 16px; text-shadow:0 1px 4px #000; }
-  #alarm { top:76px; left:50%; transform:translateX(-50%); color:#ff5c7a; font-weight:900;
-           font-size:18px; text-shadow:0 0 14px #f00; display:none; letter-spacing:1px;
-           animation:blink .5s infinite; }
-  @keyframes blink { 50% { opacity:.2; } }
+  /* стикеры RIZYLAND: чернильная обводка + жёсткая смещённая тень */
+  .sticker { background:#FFFDF7; border:3px solid #070D36; border-radius:16px;
+             box-shadow:5px 6px 0 rgba(7,13,54,.18); }
+
+  #score { top:16px; left:18px; font-size:30px; font-weight:900; padding:6px 18px 8px; }
+  #score small { display:block; font-size:12.5px; font-weight:700; color:#5b6bb0; }
+  #energons { top:16px; right:18px; font-size:22px; font-weight:900; color:#d1387f;
+              padding:10px 18px; }
+  #alarm { top:86px; left:50%; transform:translateX(-50%); color:#fff; font-weight:900;
+           font-size:17px; background:#ff5c7a; border:3px solid #070D36; border-radius:14px;
+           padding:6px 16px; display:none; letter-spacing:1px;
+           box-shadow:4px 5px 0 rgba(7,13,54,.18); animation:blink .5s infinite; }
+  @keyframes blink { 50% { opacity:.35; } }
 
   .panel { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center;
-           justify-content:center; gap:14px; text-align:center; z-index:10;
-           background:radial-gradient(110% 80% at 50% 18%, rgba(20,32,107,.88) 0%, rgba(6,8,31,.94) 60%); }
-  .panel h1 { font-size:min(8vw,58px); font-weight:900; color:#fff; line-height:1.05;
-              text-shadow:0 0 40px #0536D4, 0 4px 0 #04061f; }
-  .panel h1 span { color:#C0FF3F; }
-  .panel .sub { color:#9fb4ff; font-size:16px; max-width:640px; line-height:1.5; }
-  .panel .press { margin-top:10px; color:#7ef0ff; font-size:18px; animation:blink 1.4s infinite; }
-  .panel .keys { color:#5f6fae; font-size:13px; line-height:1.8; }
-  .panel .stat { font-size:22px; color:#eaffd0; font-weight:800; }
-  .panel .best { color:#C0FF3F; }
+           justify-content:center; gap:16px; text-align:center; z-index:10;
+           background:radial-gradient(120% 90% at 50% 12%, rgba(255,253,247,.55) 0%, rgba(223,240,255,.82) 62%); }
+  .panel .card { padding:34px 46px; display:flex; flex-direction:column; gap:14px; align-items:center; max-width:720px; }
+  .panel h1 { font-size:min(7.4vw,54px); font-weight:900; color:#070D36; line-height:1.04; }
+  .panel h1 .blue { color:#0536D4; }
+  .panel .badge { display:inline-block; background:#C0FF3F; color:#07103a; font-size:16px;
+                  font-weight:900; border:3px solid #070D36; border-radius:10px; padding:2px 12px;
+                  vertical-align:middle; box-shadow:3px 3px 0 rgba(7,13,54,.18); }
+  .panel .sub { color:#3a4780; font-size:16px; max-width:600px; line-height:1.55; }
+  .panel .press { margin-top:6px; color:#fff; font-size:18px; font-weight:900; background:#0536D4;
+                  border:3px solid #070D36; border-radius:14px; padding:10px 26px;
+                  box-shadow:4px 5px 0 rgba(7,13,54,.22); animation:blink 1.6s infinite; }
+  .panel .keys { color:#5b6bb0; font-size:13.5px; line-height:1.9; }
+  .panel .stat { font-size:23px; color:#070D36; font-weight:900; }
+  .panel .best { color:#0536D4; }
   #over { display:none; }
-  .badge { display:inline-block; background:#C0FF3F; color:#07103a; font-size:14px;
-           font-weight:900; border-radius:8px; padding:2px 10px; vertical-align:middle; }
-  a { color:#7ef0ff; }
 </style>
 </head>
 <body>
 <div id="wrap">
-  <div class="ui" id="score">0 м<small>рекорд: <span id="best">0</span> м</small></div>
-  <div class="ui" id="energons">⬡ 0</div>
+  <div class="ui sticker" id="score">0 м<small>рекорд: <span id="best">0</span> м</small></div>
+  <div class="ui sticker" id="energons">⬡ 0</div>
   <div class="ui" id="alarm">⚠ РОЙ БЛИЗКО ⚠</div>
 
   <div class="panel" id="title">
-    <h1>РИЗИ <span class="badge">RUN</span><br><span>НЕОНОВАЯ РЕКА</span></h1>
-    <div class="sub">Кнопка на виске отключена — и весь рой Гасителей поднят по тревоге.
-      Беги по Неоновой реке, Ризи. Не оглядывайся.</div>
-    <div class="press">ENTER или ПРОБЕЛ — бежать!</div>
-    <div class="keys">◀ ▶ / A D — сменить полосу · ▲ / W / ПРОБЕЛ — прыжок · ▼ / S — подкат<br>
-      Энергоны дают очки. Споткнёшься дважды подряд — рой догонит.</div>
+    <div class="card sticker">
+      <h1>РИЗИ <span class="badge">RUN</span><br><span class="blue">СНЕЖНАЯ РЕКА</span></h1>
+      <div class="sub">Солнечное утро в канун Нового Блока. Кнопка на виске отключена — и рой
+        Гасителей уже гудит за спиной. Беги по снежной реке, Ризи, собирай энергоны — и не оглядывайся!</div>
+      <div class="press">ENTER или ПРОБЕЛ — бежать!</div>
+      <div class="keys">◀ ▶ / A D — сменить полосу · ▲ / W / ПРОБЕЛ — прыжок · ▼ / S — подкат<br>
+        Споткнёшься дважды подряд — рой догонит.</div>
+    </div>
   </div>
 
   <div class="panel" id="over">
-    <h1><span>РОЙ ДОГНАЛ</span></h1>
-    <div class="stat">Пробег: <span id="finalDist">0</span> м · Энергонов: <span id="finalEn">0</span></div>
-    <div class="stat best" id="newBest" style="display:none">✦ НОВЫЙ РЕКОРД! ✦</div>
-    <div class="sub" id="quip">«Статистика занесена в журнал миссии», — вздыхает Куби.</div>
-    <div class="press">ENTER — ещё раз · ESC — на титул</div>
+    <div class="card sticker">
+      <h1><span class="blue">РОЙ ДОГНАЛ!</span></h1>
+      <div class="stat">Пробег: <span id="finalDist">0</span> м · Энергонов: <span id="finalEn">0</span></div>
+      <div class="stat best" id="newBest" style="display:none">✦ НОВЫЙ РЕКОРД! ✦</div>
+      <div class="sub" id="quip">«Статистика занесена в журнал миссии», — вздыхает Куби.</div>
+      <div class="press">ENTER — ещё раз</div>
+      <div class="keys">ESC — на титульный экран</div>
+    </div>
   </div>
 </div>
-<script type="module" src="run.js?v=4"></script>
+<script type="module" src="run.js?v=6"></script>
 </body>
 </html>
