@@ -710,23 +710,67 @@ function beep(f, dur, type="triangle", gain=0.06, slide=0){
 }
 
 // ---------- ВВОД ----------
-addEventListener("keydown", ev => {
-  if (["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Space"].includes(ev.code)) ev.preventDefault();
-  if (G.mode === "title" && (ev.code==="Enter"||ev.code==="Space")) return startRun();
+// Читаем и code, и key, и keyCode: в части окружений и раскладок code приходит пустым.
+function keyOf(ev){
+  const c = ev.code || "";
+  const k = (ev.key || "").toLowerCase();
+  const n = ev.keyCode || ev.which || 0;
+  if (c === "Enter"  || k === "enter" || n === 13) return "ENTER";
+  if (c === "Space"  || k === " " || k === "spacebar" || n === 32) return "SPACE";
+  if (c === "Escape" || k === "escape" || n === 27) return "ESC";
+  if (c === "ArrowLeft"  || c === "KeyA" || k === "arrowleft"  || k === "a" || k === "ф" || n === 37 || n === 65) return "LEFT";
+  if (c === "ArrowRight" || c === "KeyD" || k === "arrowright" || k === "d" || k === "в" || n === 39 || n === 68) return "RIGHT";
+  if (c === "ArrowUp"    || c === "KeyW" || k === "arrowup"    || k === "w" || k === "ц" || n === 38 || n === 87) return "UP";
+  if (c === "ArrowDown"  || c === "KeyS" || k === "arrowdown"  || k === "s" || k === "ы" || n === 40 || n === 83) return "DOWN";
+  return "";
+}
+function doAction(a){
+  if (G.mode === "title"){ if (a==="ENTER"||a==="SPACE"||a==="UP") startRun(); return; }
   if (G.mode === "over"){
-    if (ev.code === "Enter") return startRun();
-    if (ev.code === "Escape"){ $("over").style.display="none"; $("title").style.display="flex"; G.mode="title"; return; }
+    if (a==="ENTER"||a==="SPACE"||a==="UP") startRun();
+    else if (a==="ESC"){ $("over").style.display="none"; $("title").style.display="flex"; G.mode="title"; }
+    return;
   }
   if (G.mode !== "play") return;
-  if (ev.code==="ArrowLeft"||ev.code==="KeyA"){ G.lane = clamp(G.lane-1,0,2); beep(330,.05,"square",.03); }
-  if (ev.code==="ArrowRight"||ev.code==="KeyD"){ G.lane = clamp(G.lane+1,0,2); beep(330,.05,"square",.03); }
-  if ((ev.code==="ArrowUp"||ev.code==="KeyW"||ev.code==="Space") && G.py<=0.01 && !G.sliding){
+  if (a === "LEFT"){ G.lane = clamp(G.lane-1,0,2); beep(330,.05,"square",.03); }
+  if (a === "RIGHT"){ G.lane = clamp(G.lane+1,0,2); beep(330,.05,"square",.03); }
+  if ((a === "UP" || a === "SPACE") && G.py<=0.01 && !G.sliding){
     G.vy = 9.6; beep(470,.12,"sine",.05,250);
   }
-  if ((ev.code==="ArrowDown"||ev.code==="KeyS") && G.py<=0.01 && !G.sliding){
+  if (a === "DOWN" && G.py<=0.01 && !G.sliding){
     G.sliding = 0.7; beep(215,.1,"sine",.04,-80);
   }
+}
+addEventListener("keydown", ev => {
+  const a = keyOf(ev);
+  if (a) ev.preventDefault();
+  doAction(a);
 });
+// мышь: клик по экрану запускает забег и даёт прыжок
+addEventListener("pointerdown", ev => {
+  if (G.mode !== "play"){ doAction("ENTER"); return; }
+  const w = innerWidth;
+  if (ev.clientX < w*0.28) doAction("LEFT");
+  else if (ev.clientX > w*0.72) doAction("RIGHT");
+  else doAction("UP");
+});
+// свайпы для тача
+let touch = null;
+addEventListener("touchstart", ev => {
+  const t = ev.changedTouches[0];
+  touch = { x:t.clientX, y:t.clientY, t:performance.now() };
+}, { passive:true });
+addEventListener("touchend", ev => {
+  if (!touch) return;
+  const t = ev.changedTouches[0];
+  const dx = t.clientX - touch.x, dy = t.clientY - touch.y;
+  const dt = performance.now() - touch.t;
+  touch = null;
+  if (dt > 700) return;
+  if (Math.abs(dx) < 30 && Math.abs(dy) < 30){ doAction(G.mode==="play" ? "UP" : "ENTER"); return; }
+  if (Math.abs(dx) > Math.abs(dy)) doAction(dx > 0 ? "RIGHT" : "LEFT");
+  else doAction(dy > 0 ? "DOWN" : "UP");
+}, { passive:true });
 
 function startRun(){
   $("title").style.display = "none";
