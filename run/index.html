@@ -61,6 +61,15 @@
   .stat { font-size:22px; color:#0b1240; font-weight:900; }
   .best { color:#0536D4; }
   #over { display:none; }
+  /* экран аварии: чтобы вместо белого всегда было понятное сообщение */
+  #crash { display:none; position:absolute; inset:0; z-index:50; padding:24px;
+           align-items:center; justify-content:center; background:#fff6f6; }
+  #crash .box { background:#fff; border:4px solid #b0234a; border-radius:22px; padding:26px 30px;
+                max-width:640px; box-shadow:0 8px 0 #b0234a; }
+  #crash h2 { color:#b0234a; font-size:24px; font-weight:900; margin-bottom:10px; }
+  #crash p { color:#3a4780; font-size:15px; line-height:1.6; margin-bottom:10px; }
+  #crash code { display:block; background:#0b1240; color:#8ef; padding:10px 12px; border-radius:10px;
+                font:12px/1.5 ui-monospace,Menlo,monospace; word-break:break-all; white-space:pre-wrap; }
 </style>
 </head>
 <body>
@@ -94,7 +103,39 @@
       <div class="keys">ESC — на титульный экран</div>
     </div>
   </div>
+
+  <div id="crash"><div class="box">
+    <h2>Игра не запустилась</h2>
+    <p id="crashHint">Покажи мне текст ниже — по нему сразу видно причину.</p>
+    <code id="crashMsg"></code>
+  </div></div>
 </div>
+<script>
+  (function(){
+    function crash(msg, hint){
+      var c = document.getElementById("crash");
+      if (!c || c.style.display === "flex") return;
+      if (hint) document.getElementById("crashHint").textContent = hint;
+      document.getElementById("crashMsg").textContent = msg;
+      c.style.display = "flex";
+    }
+    window.addEventListener("error", function(e){
+      crash((e.message || "ошибка") + "\n" + (e.filename||"").split("/").pop() + ":" + (e.lineno||0));
+    });
+    window.addEventListener("unhandledrejection", function(e){ crash("Promise: " + e.reason); });
+    // нет WebGL — говорим об этом прямо
+    try {
+      var t = document.createElement("canvas");
+      if (!(t.getContext("webgl2") || t.getContext("webgl")))
+        crash("WebGL недоступен", "Браузер не может рисовать 3D. Включи аппаратное ускорение или открой в Chrome/Safari.");
+    } catch(err){ crash("WebGL: " + err.message); }
+    // сторож: если через 6 секунд игра не поднялась — сообщаем
+    setTimeout(function(){
+      if (!window.RUN) crash("Модуль игры не загрузился за 6 секунд",
+        "Чаще всего это значит, что локальный сервер не запущен. Запусти game/start-server.command и обнови страницу.");
+    }, 6000);
+  })();
+  </script>
 <script type="module" src="run.js?v=11"></script>
 </body>
 </html>
