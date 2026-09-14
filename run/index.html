@@ -61,6 +61,8 @@
   .stat { font-size:22px; color:#0b1240; font-weight:900; }
   .best { color:#0536D4; }
   #over { display:none; }
+  /* фоторежим ?hideui=1: чистый кадр без DOM-оверлеев */
+  .hideui .ui, .hideui .panel { display:none !important; }
   /* экран аварии: чтобы вместо белого всегда было понятное сообщение */
   #crash { display:none; position:absolute; inset:0; z-index:50; padding:24px;
            align-items:center; justify-content:center; background:#fff6f6; }
@@ -136,6 +138,9 @@
     }, 6000);
   })();
   </script>
-<script type="module" src="run.js?v=11"></script>
+<script type="importmap">
+{ "imports": { "three": "./three.module.js", "three/addons/": "./addons/" } }
+</script>
+<script type="module" src="src/main.js?v=30"></script>
 </body>
 </html>

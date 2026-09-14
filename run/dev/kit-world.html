@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>kit: world</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html,body { margin:0; height:100%; overflow:hidden; background:#cfe9ff; }
+  canvas { display:block; width:100%; height:100%; }
+  #hud { position:fixed; left:10px; bottom:8px; font:12px/1.35 ui-monospace,Menlo,monospace; color:#070D36;
+         background:rgba(255,255,255,.72); padding:4px 8px; border-radius:6px; pointer-events:none; white-space:pre; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "../three.module.js", "three/addons/": "../addons/" } }
+</script>
+</head>
+<body>
+<div id="hud"></div>
+<!--
+  ?at=сек (пролёт, шаг 1/60)  ?seed=N  ?q=low|med|high
+  ?piece=gate|bridge|tunnel|village  &pz=метры до старта пьесы в финальном кадре
+  ?palette=0..3 (мгновенно; без параметра — авто каждые 1000 м)
+  ?ents=fly|rows|none  ?cam=game|side|high|close|far  ?lane=0..2
+  ?post=0 ?look=0 ?curve=0 ?rizy=0 ?hud=0 ?live=1
+-->
+<script type="module" src="./kit-world.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>look: curve</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html,body { margin:0; height:100%; overflow:hidden; background:#cfe9ff; }
+  canvas { display:block; width:100%; height:100%; }
+  #hud { position:absolute; left:10px; top:8px; font:12px/1.4 ui-monospace,Menlo,monospace; color:#0b1240;
+         background:rgba(255,255,255,.7); padding:4px 8px; border-radius:6px; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "../three.module.js", "three/addons/": "../addons/" } }
+</script>
+</head>
+<body>
+<div id="hud"></div>
+<!-- ?bend=0|1  &sway=-1..1 (вес и знак покачивания)  &cam=game|zoom|side  &live=1 — анимация -->
+<script type="module" src="look-curve.js"></script>
+</body>
+</html>

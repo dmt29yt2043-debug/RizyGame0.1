@@ -1,7 +1,16 @@
 // РИЗИ RUN: Снежная Река — светлый мягкий раннер в стилистике RIZYLAND.
+// LEGACY: монолит до v3, только для справки (игра теперь в src/). Импорт поправлен на ../three.module.js.
 // Плотный «коридор» трассы, арки, слои реквизита, крупная камера.
 
-import * as THREE from "./three.module.js";
+import * as THREE from "../three.module.js";
+
+// __SHOT_MODE__: ?seed=N делает мир детерминированным (для сравнимых скриншотов)
+const QP = new URLSearchParams(location.search);
+if (QP.has("seed")){
+  let a = (+QP.get("seed") || 1) >>> 0;
+  Math.random = () => { a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
 
 // ---------- УТИЛИТЫ ----------
 const $ = id => document.getElementById(id);
@@ -21,7 +30,7 @@ function canvasTex(w, h, draw, rep){
 }
 
 // ---------- РЕНДЕР ----------
-const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:"high-performance" });
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:"high-performance", preserveDrawingBuffer: QP.has("shot") });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -836,6 +845,7 @@ function hit(){
 // ---------- ЦИКЛ ----------
 let lastT = performance.now(), perf = 0;
 function step(now){
+  if (window.__freeze){ if (!window.__frozenDrawn){ render(); window.__frozenDrawn = true; } return; }
   let elapsed = Math.min(0.35, (now-lastT)/1000);
   lastT = now;
   while (elapsed > 0){
@@ -1027,3 +1037,20 @@ function render(){ renderer.render(scene, camera); }
 requestAnimationFrame(tickRAF);
 
 window.RUN = { G, update, idle, render, obstacles, coins, startRun, gameOver, rizy, camera, swarm, renderer, scene };
+
+// ?shot=1&at=6 — автостарт, симуляция N секунд фиксированным шагом, заморозка кадра
+if (QP.has("shot")){
+  const at = +QP.get("at") || 4;
+  const lane = QP.has("lane") ? +QP.get("lane") : null;
+  startRun();
+  for (let i = 0; i < Math.round(at*60); i++){
+    if (lane !== null) G.lane = lane;
+    G.grace = 99;                 // в фоторежиме не умираем
+    update(1/60); idle(1/60);
+  }
+  if (QP.get("pose") === "jump"){ G.py = 1.2; G.vy = 0; }
+  if (QP.get("pose") === "slide"){ G.sliding = 0.5; }
+  idle(1/60); render();
+  window.__freeze = true;
+  document.title = "SHOT_READY";
+}

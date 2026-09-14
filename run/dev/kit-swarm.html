@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>kit-swarm · стенд Гасителей</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html,body { margin:0; height:100%; overflow:hidden; background:#cfe9ff; }
+  canvas { display:block; width:100%; height:100%; }
+  #info { position:fixed; left:10px; bottom:8px; font:12px/1.35 ui-monospace,Menlo,monospace; color:#070D36;
+          background:rgba(255,255,255,.72); padding:4px 8px; border-radius:6px; pointer-events:none; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "../three.module.js", "three/addons/": "../addons/" } }
+</script>
+</head>
+<body>
+<div id="info"></div>
+<!-- ?danger=0|0.5|1  ?catch=1&ct=0.25  ?from=1&sw=3 (сначала danger=from sw сек)  ?at=сек  ?cam=game|old|title|side
+     ?q=low|med|high  ?post=0  ?dv=0.5 (виньетка опасности)  ?count=N  ?rm=1  ?ts=0.3 (слоу-мо)  ?hide=1  ?hideui=1  ?shot=1 -->
+<script type="module" src="./kit-swarm.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>look-post · стенд постобработки</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html,body { margin:0; height:100%; overflow:hidden; background:#cfe9ff; }
+  canvas { display:block; width:100%; height:100%; }
+  #info { position:fixed; left:10px; bottom:8px; font:12px/1.35 ui-monospace,Menlo,monospace; color:#070D36;
+          background:rgba(255,255,255,.72); padding:4px 8px; border-radius:6px; pointer-events:none; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "../three.module.js", "three/addons/": "../addons/" } }
+</script>
+</head>
+<body>
+<div id="info"></div>
+<!-- ?q=off|low|med|high  ?speed=0..1  ?danger=0..1  ?neutral=1  ?aa=0  ?view=ao  ?cam=close  ?t=сек  ?shot=1 -->
+<script type="module" src="./look-post.js"></script>
+</body>
+</html>

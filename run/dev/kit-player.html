@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>kit: player</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin:0; height:100%; background:#cfe9ff; overflow:hidden; font-family:system-ui, sans-serif; }
+  canvas { display:block; width:100%; height:100%; }
+  .lbl { position:absolute; font:600 12px/1 ui-monospace, monospace; color:#070D36; background:rgba(255,255,255,.72);
+         padding:4px 7px; border-radius:9px; pointer-events:none; }
+  #info { position:absolute; left:10px; bottom:8px; font:11px/1.4 ui-monospace, monospace; color:#0b1240; opacity:.75; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "../three.module.js", "three/addons/": "../addons/" } }
+</script>
+</head>
+<body>
+<div id="info"></div>
+<script type="module" src="kit-player.js"></script>
+</body>
+</html>
