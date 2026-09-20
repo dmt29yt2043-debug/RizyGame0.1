@@ -38,6 +38,9 @@ varying vec4 vInfo;      // type, add, k, flags
 varying float vWorldY;
 varying float vShade;
 
+// бит флага без целочисленной арифметики (работает и в GLSL ES 1.0 / WebGL1)
+float fxFlag( float f, float b ){ return mod( floor( f / b + 0.001 ), 2.0 ); }
+
 void main(){
 	float t = uTime - aStart.w;
 	float life = aVel.w;
@@ -46,17 +49,24 @@ void main(){
 		return;
 	}
 	float k = t / life;
-	int fl = int( aMisc.z + 0.5 );
+	float fl = aMisc.z;
 	float drag = aPhys.x;
 	float e = drag > 0.001 ? ( 1.0 - exp( -drag * t ) ) / drag : t;
 	vec3 p = aStart.xyz + aVel.xyz * e;
 	p.y += 0.5 * aPhys.y * t * t;
-	if ( ( fl & 1 ) != 0 ) p = mix( p, uTarget, k * k );
+	if ( fxFlag( fl, 1.0 ) > 0.5 ){
+		// магнит: easeInQuad к цели + дуга В СТОРОНУ (знак из seed) — шлейф идёт сбоку от силуэта, а не сквозь спину.
+		// 2.2 м на пике дуги: с игровой камеры (6.4 м сзади) полуширина Ризи ≈ 0.45 м — шлейф гарантированно снаружи.
+		float bow = sin( 3.14159 * k ) * ( 1.0 - k * 0.3 );
+		p = mix( p, uTarget, k * k );
+		p.x += ( aMisc.w - 0.5 ) * 2.2 * bow;
+		p.y += 0.45 * bow;
+	}
 
-	float sk = ( fl & 8 ) != 0 ? 1.0 - ( 1.0 - k ) * ( 1.0 - k ) * ( 1.0 - k ) : k;
+	float sk = fxFlag( fl, 8.0 ) > 0.5 ? 1.0 - ( 1.0 - k ) * ( 1.0 - k ) * ( 1.0 - k ) : k;
 	float size = mix( aSize.x, aSize.y, sk );
 	float alpha = aColor.a;
-	if ( ( fl & 16 ) != 0 ) alpha *= 1.0 - smoothstep( 0.7, 1.0, k );
+	if ( fxFlag( fl, 16.0 ) > 0.5 ) alpha *= 1.0 - smoothstep( 0.7, 1.0, k );
 	else alpha *= pow( 1.0 - k, 1.5 );
 	if ( aSize.w > 0.0 ) alpha *= smoothstep( 0.0, aSize.w, k );
 
@@ -69,7 +79,7 @@ void main(){
 	vShade = 1.0;
 	vec4 mv;
 	float gy = 10.0;
-	if ( ( fl & 2 ) != 0 ){
+	if ( fxFlag( fl, 2.0 ) > 0.5 ){
 		mv = viewMatrix * vec4( w.x + c.x * size, w.y, w.z + c.y * size, 1.0 );
 	} else {
 		mv = viewMatrix * vec4( w, 1.0 );
@@ -86,7 +96,7 @@ void main(){
 		} else {
 			float ang = aPhys.z + aPhys.w * t;
 			vec2 cc = c * size;
-			if ( ( fl & 4 ) != 0 ){
+			if ( fxFlag( fl, 4.0 ) > 0.5 ){
 				float fp = cos( aMisc.w * 6.2831 + t * ( 5.0 + aMisc.w * 7.0 ) );
 				cc.x *= 0.12 + 0.88 * abs( fp );
 				vShade = 0.72 + 0.28 * abs( fp ) + 0.12 * sign( fp );
@@ -96,7 +106,7 @@ void main(){
 		}
 		mv.xy += q;
 		gy = p.y + q.x * viewMatrix[ 1 ][ 0 ] + q.y * viewMatrix[ 1 ][ 1 ];   // мировой y угла: (Rᵀ·q).y
-		if ( ( fl & 32 ) != 0 ) gy = 10.0;
+		if ( fxFlag( fl, 32.0 ) > 0.5 ) gy = 10.0;
 	}
 	vWorldY = gy;
 	// у самой камеры частица не должна заливать экран
@@ -114,6 +124,7 @@ const FRAG = /* glsl */`
 #include <common>
 #include <fog_pars_fragment>
 uniform sampler2D uAtlas;
+uniform float uAtlasBias;   // смещение LOD: мелкие частицы не уходят на предельные мипы атласа
 uniform float uGroundY;
 uniform float uGroundSoft;
 varying vec2 vUv;
@@ -131,14 +142,14 @@ void main(){
 		// облачко (ячейка 0/1): свет из R, холодная тень снизу
 		vec2 uv = vUv * 0.5 + 0.5;
 		uv = vec2( uv.x * 0.5 + 0.5 * type, uv.y * 0.5 + 0.5 );
-		vec4 tx = texture2D( uAtlas, uv );
+		vec4 tx = texture2D( uAtlas, uv, uAtlasBias );
 		m = tx.a;
-		col *= mix( vec3( 0.66, 0.75, 0.95 ), vec3( 1.06 ), tx.r );
+		col *= mix( vec3( 0.80, 0.86, 0.98 ), vec3( 1.08 ), tx.r );   // холодная, но не серая тень (на досках не «грязь»)
 	} else if ( type < 3.5 ){
 		// звезда (2) / снежинка (3) — нижняя строка атласа
 		vec2 uv = vUv * 0.5 + 0.5;
 		uv = vec2( uv.x * 0.5 + 0.5 * ( type - 2.0 ), uv.y * 0.5 );
-		vec4 tx = texture2D( uAtlas, uv );
+		vec4 tx = texture2D( uAtlas, uv, uAtlasBias );
 		m = tx.a;
 		col *= 1.0 + 1.2 * exp( -r * r * 30.0 );     // горячее ядро
 	} else if ( type < 4.5 ){
@@ -170,7 +181,11 @@ void main(){
 	if ( a < 0.003 ) discard;
 	float add = vInfo.y;
 #ifdef USE_FOG
+	#ifdef FOG_EXP2
+	float ff = 1.0 - exp( -fogDensity * fogDensity * vFogDepth * vFogDepth );
+	#else
 	float ff = smoothstep( fogNear, fogFar, vFogDepth );
+	#endif
 	col = mix( col, fogColor, ff * ( 1.0 - add ) );
 	a *= 1.0 - ff * add;
 #endif
@@ -215,6 +230,10 @@ export function createPool(opts){
     uTarget: { value: new THREE.Vector3(0, 1.1, 0) },
     uNearFade: { value: 1.2 },
     uAtlas: { value: opts.atlas },
+    // мипы атласа: ячейки — ровные степени двойки (квадранты), box-фильтр не смешивает соседей вплоть до
+    // уровня 1×1; плюс у всех четырёх форм альфа = 0 в рамке ~9 px (atlas.js gutter). Отрицательный bias
+    // держит мелкие частицы на резких уровнях — «квадратных спрайтов» из усреднения не будет.
+    uAtlasBias: { value: opts.atlasBias != null ? opts.atlasBias : -0.7 },
     uGroundY: { value: -0.02 },
     uGroundSoft: { value: 0.22 },
   }]);
@@ -223,6 +242,7 @@ export function createPool(opts){
     name: "fx:" + opts.name, uniforms, vertexShader: VERT, fragmentShader: FRAG,
     transparent: true, depthWrite: false, side: THREE.DoubleSide,   // плоские/штрих-квады меняют обход
     depthTest: true, fog: true,
+    extensions: { derivatives: true },                               // fwidth у конфетти в WebGL1
     blending: THREE.CustomBlending, blendEquation: THREE.AddEquation,
     blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor,
     blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneMinusSrcAlphaFactor,

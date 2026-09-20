@@ -15,10 +15,11 @@ export function bankHeight(ax){
 }
 
 function trackGeo(){
-  const nx = 10, z0 = TRACK.z0, z1 = TRACK.z1, rows = z0 - z1 + 1;
+  // шаг 2 м по z: провис изгиба на отрезке ≤ bendY·1² ≈ 3 мм, треугольников вдвое меньше
+  const nx = 10, z0 = TRACK.z0, z1 = TRACK.z1, STEP = 2, rows = Math.round((z0 - z1) / STEP) + 1;
   const P = [], N = [], UV = [], I = [];
   for (let r = 0; r < rows; r++){
-    const z = z0 - r;
+    const z = z0 - r * STEP;
     for (let i = 0; i <= nx; i++){
       const u = i / nx, x = -TRACK.half + u * TRACK.half * 2;
       P.push(x, 0.02 * (1 - (x / TRACK.half) ** 2), z); N.push(0, 1, 0); UV.push(u, -z);
@@ -38,9 +39,9 @@ function trackGeo(){
 
 function mirrorMerge(profile){
   // правый профиль + зеркальный левый (порядок точек разворачиваем — нормали остаются наружу)
-  const R = sweep(profile, TRACK.z0, TRACK.z1, 1);
+  const R = sweep(profile, TRACK.z0, TRACK.z1, 2);
   const Lp = profile.slice().reverse().map(p => [-p[0], p[1]]);
-  const Lg = sweep(Lp, TRACK.z0, TRACK.z1, 1);
+  const Lg = sweep(Lp, TRACK.z0, TRACK.z1, 2);
   const g = new THREE.BufferGeometry();
   const cat = (a, b) => { const o = new Float32Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; };
   g.setAttribute("position", new THREE.BufferAttribute(cat(R.attributes.position.array, Lg.attributes.position.array), 3));
@@ -66,7 +67,7 @@ function curbGeo(){
 
 function bankGeo(){
   const prof = [];
-  for (let x = 11.5; x >= 4.95; x -= 0.35) prof.push([x, x > 9.6 ? -0.04 : bankHeight(x)]);
+  for (const x of [11.5, 9.6, 8.8, 8.0, 7.3, 6.7, 6.2, 5.75, 5.35, 5.05]) prof.push([x, x > 9.5 ? -0.04 : bankHeight(x)]);
   prof.push([4.95, 0.0], [4.9, -0.1]);
   return mirrorMerge(prof);
 }

@@ -21,7 +21,7 @@ export function createEntities(mats, o){
   const bulbs = part(seg.bulbs, mats.glowBulb, 36, { receive: false });
   const pole = part(PR.obstSlidePole(), mats.candyHaz, 40, { cast: true });
   const walls = [part(PR.obstSleigh(), mats.candyHaz, 18, { cast: true }), part(PR.obstGifts(), mats.candyHaz, 18, { cast: true }),
-                 part(PR.obstIce(), mats.iceHaz, 18, { cast: true })];
+                 part(PR.obstCart(), mats.candyHaz, 18, { cast: true })];
   const decalGeo = PR.groundQuad(1.6, 1.1);
   const aDecal = new THREE.InstancedBufferAttribute(new Float32Array(48 * 2), 2);
   decalGeo.setAttribute("aDecal", aDecal);
@@ -46,7 +46,8 @@ export function createEntities(mats, o){
     u.coin = false; u.lo = lo; u.hi = hi;
     u.kind = ent.kind === "jump" ? K_JUMP : ent.kind === "slide" ? K_SLIDE : K_WALL;
     const z = typeof ent.z === "number" ? ent.z : 0;
-    u.variant = ent.variant != null ? ent.variant % 3 : ((Math.floor(-z * 7.3) % 3) + 3) % 3;
+    // вариант стены: от z и полосы — у многополосной стены (отдельные сущности с общим z) соседи разные
+    u.variant = ent.variant != null ? ent.variant % 3 : ((Math.floor(-z * 7.3) + lo) % 3 + 3) % 3;
     p.position.set((LANES[lo] + LANES[hi]) / 2, 0, z); p.scale.set(1, 1, 1); p.visible = true;
     return attach(p, liveO);
   }
@@ -96,7 +97,7 @@ export function createEntities(mats, o){
         pole.pushS(x + half, y, z, 1, 0, 1, sy, 1, 1, 1, 1);
       } else walls[u.variant].pushS(x, y, z, 1, 0, 1, sy, 1, 1, 1, 1);
       // знак на земле за 7 м: 0 на 55 м → 0.85 на ≤ 20 м, гаснет, когда уходит под Ризи
-      const dz = z - 7, d = -dz;
+      const dz = z + 7, d = -dz;                   // знак БЛИЖЕ к игроку, чем препятствие (z растёт к камере)
       const a = clamp((55 - d) / 35, 0, 1) * 0.85 * clamp((1 - dz) / 3, 0, 1);
       if (a > 0.01) for (let l = u.lo; l <= u.hi; l++) pushDecal(x + LANES[l] - cx, dz, u.kind, a);
     }

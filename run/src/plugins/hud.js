@@ -1,77 +1,113 @@
-// БАЗОВЫЙ плагин HUD (фолбэк = legacy/run.js): пробег, энергоны, полоса роя, титульная и финальная карточки.
-// DOM живёт в index.html; плагин только переключает и заполняет его.
+// АДАПТЕР интерфейса: HUD-кит src/ui (пилюли, миссии, комбо, карточки) вместо базового DOM из index.html.
+import { createHUD } from "../ui/hud.js";
+import { createMissions, recordDaily } from "../ui/progress.js";
 
-const QUIPS = [
-  "«Статистика занесена в журнал миссии», — вздыхает Куби.",
-  "«Рекомендация: в следующий раз — быстрее», — говорит Куби. Спасибо, Куби.",
-  "«Мой хвост видел этот подкат. Уважение», — передаёт Му-Хрю.",
-  "Мисс Фантастика мурлычет. Энергия сердца восстановлена.",
-];
+const LEGACY = ["score", "energons", "swarm", "title", "over"];
 
 export default {
   name: "hud",
-  install(ctx){
-    const { $, bus, util, cfg } = ctx;
-    const G = ctx.G;
-    const scoreN = $("score").querySelector(".n");
-    const enN = $("energons").querySelector(".n");
-    const pill = $("energons");
-    const swarmEl = $("swarm"), swarmFill = $("swarmFill");
-    $("best").textContent = G.best;
+  async install(ctx){
+    const { G, bus, cfg } = ctx;
+    const $ = id => document.getElementById(id);
+    const prev = {};
+    for (const id of LEGACY){ const el = $(id); if (el){ prev[id] = el.style.display; el.style.display = "none"; } }
 
-    let lastScore = -1, lastFill = -1, bumpT = 0;
+    let hud = null;
+    try {
+      hud = createHUD(ctx, {
+        container: $("wrap"),
+        milestoneStep: (cfg && cfg.milestoneStep) || 250,
+        edges: !(ctx.look && ctx.look.post),   // если пост рисует виньетку — HUD свою не дублирует
+      });
+      await Promise.race([hud.ready, new Promise(r => setTimeout(r, 2000))]);
+    } catch (e){
+      for (const id of LEGACY){ const el = $(id); if (el) el.style.display = prev[id] || ""; }
+      try { hud && hud.dispose && hud.dispose(); } catch(_){}
+      throw e;                                  // загрузчик откатится на base/hud.js
+    }
 
-    const onStart = () => {
-      $("title").style.display = "none";
-      $("over").style.display = "none";
-      swarmEl.style.display = "none";
-      enN.textContent = G.energons;
-      lastScore = -1; lastFill = -1;
-    };
-    const onTitle = () => {
-      $("over").style.display = "none";
-      $("title").style.display = "flex";
-    };
-    const onOver = (r) => {
-      $("finalDist").textContent = r.dist;
-      $("finalEn").textContent = r.energons;
-      if (r.isBest) $("best").textContent = G.best;
-      $("newBest").style.display = r.isBest ? "block" : "none";
-      $("quip").textContent = util.pick(QUIPS);
-      $("over").style.display = "flex";
-      swarmEl.style.display = "none";
-    };
-    const onPickup = () => {
-      enN.textContent = G.energons;
-      pill.classList.add("bump");
-      clearTimeout(bumpT);
-      bumpT = setTimeout(() => pill.classList.remove("bump"), 120);
-    };
-    const onNear = () => { swarmEl.style.display = "block"; };
-    const onFar = () => { swarmEl.style.display = "none"; };
+    const has = n => hud && typeof hud[n] === "function";
+    const call = (n, a, b, c) => { if (has(n)){ try { return hud[n](a, b, c); } catch(e){ console.error("[hud] " + n, e); } } };
+    const act = a => { const R = window.RUN; if (R && typeof R.doAction === "function") R.doAction(a); };
 
-    bus.on("start", onStart);
-    bus.on("title", onTitle);
-    bus.on("gameover", onOver);
-    bus.on("pickup", onPickup);
-    bus.on("swarm:near", onNear);
-    bus.on("swarm:far", onFar);
+    let missions = null;
+    try { missions = createMissions(); } catch(e){}
+    try { recordDaily(); } catch(e){}
+    call("setBest", G.best || 0);
+    if (missions && missions.stars != null) call("setStars", missions.stars);
+    try { if (hud.settings) bus.emit("settings", hud.settings); } catch(e){}
 
+    // кнопки HUD → действия игры
+    if (has("on")){
+      const map = { start:"ENTER", restart:"ENTER", again:"ENTER", play:"ENTER", resume:"ESC", pause:"ESC", title:"ESC", menu:"ESC" };
+      for (const k in map){ try { hud.on(k, () => act(map[k])); } catch(e){} }
+    }
+
+    const tmpV = { x:0, y:0, z:0 }, tmpXY = { x:0, y:0 };
+    const missionAdd = (key, n) => {
+      if (!missions || typeof missions.add !== "function") return;
+      let r = null;
+      try { r = missions.add(key, n); } catch(e){ return; }
+      if (!r) return;
+      const view = typeof missions.view === "function" ? missions.view() : null;
+      if (r.completed){
+        call("missionComplete", r);
+        try { bus.emit("mission:complete", r); } catch(e){}
+        if (missions.stars != null) call("setStars", missions.stars);
+      } else {
+        try { bus.emit("mission:progress", r); } catch(e){}
+      }
+      if (view) call("setMission", view, view.progress, view);
+    };
+
+    bus.on("title", () => { call("show", "title"); call("setBest", G.best || 0); if (missions && missions.stars != null) call("setStars", missions.stars); });
+    bus.on("start", () => {
+      call("show", "play");
+      call("setEnergons", 0, { instant:true });
+      call("setDistance", 0);
+      call("setCombo", 1, 0);
+      call("setDanger", 0);
+      if (missions && typeof missions.onStart === "function"){ try { missions.onStart(); } catch(e){} }
+      if (missions && typeof missions.view === "function"){
+        const v = missions.view(); if (v) call("setMission", v, v.progress, v);
+      }
+      call("go");
+    });
+    bus.on("pickup", c => {
+      call("setEnergons", G.energons, { streak: G.combo });
+      if (((G.combo | 0) % 5) === 0 && c && c.object3d && has("projectToHUD") && has("flyToCounter")){
+        try {
+          const p = c.object3d.position; tmpV.x = p.x; tmpV.y = p.y; tmpV.z = p.z;
+          hud.projectToHUD(tmpV, tmpXY); hud.flyToCounter(tmpXY.x, tmpXY.y);
+        } catch(e){}
+      }
+      missionAdd("energons", 1);
+    });
+    bus.on("nearmiss", () => { call("popLabel", "ЛОВКО!", "nice"); missionAdd("nice", 1); });
+    bus.on("despawn", e => {
+      if (e && (e.kind === "jump" || e.kind === "slide") && e.passed && !e.touched) missionAdd(e.kind, 1);
+    });
+    bus.on("combo:tier", n => call("setCombo", n, 0));
+    bus.on("milestone", m => call("milestone", m));
+    bus.on("hit", () => call("popLabel", "ОЙ!", "warn"));
+    bus.on("gameover", p => {
+      const stats = { dist: Math.round(G.dist), energons: G.energons, isBest: !!(p && p.isBest), best: G.best };
+      if (has("results")) { try { hud.results(stats); } catch(e){ call("show", "results"); } }
+      else call("show", "results");
+    });
+    bus.on("pause", b => call("show", b ? "pause" : "play"));
+
+    function update(realDt){
+      call("setDistance", G.dist);
+      call("setDanger", G.danger || 0);
+      if (has("update")) { try { hud.update(realDt); } catch(e){} }
+    }
     return {
-      update(){
-        if (G.mode !== "play") return;
-        const d = Math.floor(G.dist);
-        if (d !== lastScore){ lastScore = d; scoreN.textContent = d; }
-        if (G.swarmNear > 0){
-          // ширину пишем только при заметном изменении — без лишних строк и перерисовок
-          const f = Math.round(util.clamp(G.swarmNear/cfg.swarmTime,0,1)*500);
-          if (f !== lastFill){ lastFill = f; swarmFill.style.width = (f/5) + "%"; }
-        }
-      },
+      handles: { hud:true, score:true, energons:true, swarm:true, panels:true },
+      update,
       dispose(){
-        bus.off("start", onStart); bus.off("title", onTitle); bus.off("gameover", onOver);
-        bus.off("pickup", onPickup); bus.off("swarm:near", onNear); bus.off("swarm:far", onFar);
-        clearTimeout(bumpT);
+        try { hud.dispose(); } catch(e){}
+        for (const id of LEGACY){ const el = $(id); if (el) el.style.display = prev[id] || ""; }
       },
     };
   },

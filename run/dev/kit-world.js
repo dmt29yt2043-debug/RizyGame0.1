@@ -15,7 +15,11 @@ const log = [];
 
 let cfg = null;
 try { cfg = (await import("../src/config.js")).cfg; } catch (e){ console.warn("dev: config.js не загрузился", e); }
-const CAM = Object.assign({ fov: 58, y: 3.05, z: 5.45, near: 0.1, far: 400, lookZ: -8 }, cfg && cfg.CAM);
+// камера по CAM-1 библии (fov 60, y 3.8, z 6.4, lookAt(·, 1.0, −10)); ?cam=legacy — старый cfg.CAM
+const CAM = qp.get("cam") === "legacy" && cfg && cfg.CAM ? Object.assign({ lookY: 1.35 }, cfg.CAM)
+  : { fov: 60, y: 3.8, z: 6.4, near: 0.1, far: 400, lookY: 1.0, lookZ: -10 };
+const PORTRAIT = innerWidth / innerHeight < 1;
+if (PORTRAIT){ CAM.fov += 10; CAM.y = 4.2; }
 
 // ---------- РЕНДЕР ----------
 const usePost = qp.get("post") !== "0";
@@ -38,10 +42,10 @@ const sun = new THREE.DirectionalLight(0xFFF1DC, 2.6);
 const SUN_DIR = new THREE.Vector3(-0.62, 0.70, -0.25).normalize();
 sun.castShadow = true;
 sun.shadow.mapSize.set(Q === "high" ? 2048 : 1024, Q === "high" ? 2048 : 1024);
-Object.assign(sun.shadow.camera, { left: -18, right: 18, top: 26, bottom: -26, near: 1, far: 90 });
+Object.assign(sun.shadow.camera, { left: -16, right: 16, top: 26, bottom: -26, near: 1, far: 70 });
 sun.shadow.bias = -0.0003; sun.shadow.normalBias = 0.03;
 sun.target.position.set(0, 0, -14);
-sun.position.copy(sun.target.position).addScaledVector(SUN_DIR, 40);
+sun.position.copy(sun.target.position).addScaledVector(SUN_DIR, 30);
 const fill = new THREE.DirectionalLight(0xBFD8FF, 0.45);
 fill.position.set(0, 6, 12);
 scene.add(hemi, sun, sun.target, fill);
@@ -66,6 +70,7 @@ const kit = createWorldKit(ctx, {
   onEvent: (name, p) => log.push(`${name}${p && p.type ? ":" + p.type : ""}@${Math.round(G.dist)}`),
 });
 if (qp.has("palette")) kit.setPalette(num("palette", 0), true);
+if (qp.has("best")) kit.setBest(num("best", 0));       // ?best=N — флаг «РЕКОРД» на N м
 
 if (usePost){
   try {
@@ -97,7 +102,7 @@ function placeCamera(){
   else if (CAMMODE === "high"){ camera.position.set(0, 16, 14); camera.lookAt(0, 0, -30); }
   else if (CAMMODE === "close"){ camera.position.set(3.4, 1.9, -4.5); camera.lookAt(-0.5, 1.0, -14); }
   else if (CAMMODE === "far"){ camera.position.set(0, CAM.y, CAM.z); camera.lookAt(0, 4.5, -60); }
-  else { camera.position.set(G.x * 0.42, CAM.y, CAM.z); camera.lookAt(G.x * 0.55, 1.45, CAM.lookZ); }
+  else { camera.position.set(G.x * 0.5, CAM.y, CAM.z); camera.lookAt(G.x * 0.6, CAM.lookY, CAM.lookZ); }
   camera.updateMatrixWorld();
 }
 placeCamera();
@@ -182,11 +187,13 @@ function measure(){
   info.autoReset = true;
   return { total: all.calls, base: base.calls, world: all.calls - base.calls, worldNoShadowPass: noShadow.calls - (base.calls - 0), tris: all.tris };
 }
+// разбивка: имя×экземпляры (* — отбрасывает тень) и треугольники на экземпляр
 function breakdown(){
   const out = [];
   kit.root.traverseVisible(o => {
     if (!o.isMesh) return;
-    out.push(`${o.name || o.parent.name || o.geometry.type}${o.isInstancedMesh ? "×" + o.count : ""}${o.castShadow ? "*" : ""}`);
+    const g = o.geometry, tri = Math.round((g.index ? g.index.count : g.attributes.position.count) / 3);
+    out.push(`${o.name || o.parent.name || g.type}${o.isInstancedMesh ? "×" + o.count : ""}${o.castShadow ? "*" : ""}:${tri}`);
   });
   return out;
 }
@@ -202,8 +209,25 @@ hud.textContent = `world kit · q=${Q} at=${AT}s dist=${G.dist.toFixed(0)}m spee
   `draw calls: world ${stats.world} / total ${stats.total} · tris ${stats.tris} · look ${ctx.look.mats ? "on" : "off"} curve ${ctx.look.curve ? "on" : "off"} post ${ctx.look.post ? "on" : "off"}`;
 if (qp.get("hud") === "0") hud.hidden = true;
 
+// пиксель финального кадра (sRGB 0..255), x/y — доли ширины/высоты от левого верхнего угла
+function px(fx, fy){
+  const gl = renderer.getContext(), c = renderer.domElement, out = new Uint8Array(4);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.readPixels(Math.floor(fx * (c.width - 1)), Math.floor((1 - fy) * (c.height - 1)), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, out);
+  return [out[0], out[1], out[2]];
+}
+// нагрузочный прогон кита без рендера: мс на update и прирост кучи (грубая проверка «ноль аллокаций»)
+function bench(n = 3000){
+  const dt = 1 / 60, g = { dist: G.dist, speed: 24 };
+  for (let i = 0; i < 120; i++){ g.dist += g.speed * dt; kit.update(dt, dt, g); }   // прогрев JIT
+  const mem = () => (performance.memory ? performance.memory.usedJSHeapSize : 0);
+  const m0 = mem(), t0 = performance.now();
+  for (let i = 0; i < n; i++){ g.dist += g.speed * dt; kit.update(dt, dt, g); }
+  const ms = (performance.now() - t0) / n, m1 = mem();
+  return { frames: n, msPerUpdate: +ms.toFixed(4), heapDeltaKB: Math.round((m1 - m0) / 1024), dist: Math.round(g.dist) };
+}
 window.DEV = {
-  kit, renderer, scene, camera, G, log, stats, breakdown, measure,
+  kit, renderer, scene, camera, G, log, stats, breakdown, measure, px, bench,
   info: () => JSON.stringify({ stats, dist: +G.dist.toFixed(1), palette: ps.index, events: log.slice(-12),
     obstacles: kit.debug.ents.liveObstacles.length, coins: kit.debug.ents.liveCoins.length, decor: kit.debug.decor.count(),
     landmarks: kit.landmarks.map(p => `${p.type}@${Math.round(p.s0)}`), breakdown: breakdown() }),
@@ -213,5 +237,5 @@ if (LIVE){
   let last = performance.now();
   renderer.setAnimationLoop(now => { const dt = Math.min(0.05, (now - last) / 1000); last = now; step(dt); render(dt); });
 } else {
-  requestAnimationFrame(() => { document.title = "SHOT_READY"; });
+  requestAnimationFrame(() => { window.RUN = window.DEV; document.title = "SHOT_READY"; });
 }

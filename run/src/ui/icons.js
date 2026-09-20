@@ -96,7 +96,14 @@ export const handSVG = `<svg viewBox="0 0 64 72" aria-hidden="true">
   <path d="M28 12.5v8" stroke="#C0FF3F" stroke-width="3" stroke-linecap="round" opacity=".0"/>
 </svg>`;
 
-export const snowflakeSVG = `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">
+// Сердце revive: синий войлок с бликом
+export const heartSVG = `<svg viewBox="0 0 48 48" aria-hidden="true">
+  <path d="M24 42 C10 32 4 25 4 16.5 A10.5 10.5 0 0 1 24 11 A10.5 10.5 0 0 1 44 16.5 C44 25 38 32 24 42Z"
+   fill="#1E5BFF" stroke="${INK}" stroke-width="3.4" stroke-linejoin="round"/>
+  <path d="M11.5 16 A6 6 0 0 1 18 10.8" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" opacity=".85"/>
+</svg>`;
+
+export const snowflakeSVG =`<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round">
   <path d="M12 2.5v19M3.8 7.25l16.4 9.5M3.8 16.75l16.4-9.5M9.5 4.2 12 6.7l2.5-2.5M9.5 19.8 12 17.3l2.5 2.5"/>
 </svg>`;
 

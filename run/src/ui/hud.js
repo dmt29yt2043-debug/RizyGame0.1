@@ -1,12 +1,15 @@
 // HUD-кит «Ризи RUN»: самодостаточный DOM-интерфейс поверх канваса.
-// createHUD(ctx, { container }) → API (см. README-комментарий внизу файла и отчёт кита).
+// createHUD(ctx, opts) → API (полный контракт — в комментарии в конце файла).
 // Живёт на realDt: хит-стоп и пауза мира HUD не замораживают. Горячий путь update() без аллокаций.
+// Кит только показывает и сообщает о намерениях игрока (события on(...)); управлять игрой — дело адаптера.
 import { EASE, createClock, numView, spring, damp, clamp, OPACITY, SCALE_X, table, easeOutExpo } from "./anim.js";
-import { buildDOM, RING_C } from "./hud-dom.js";
-import { gemSVG } from "./icons.js";
+import { buildDOM, RING_C, REV_C } from "./hud-dom.js";
+import { parseTemplate, pluralRu, TXT } from "./text.js";
+import { loadSettings, saveSettings, DEFAULT_SETTINGS } from "./progress.js";
 
 const CSS_URL = new URL("./hud.css", import.meta.url).href;
 const DASH = table(200, u => (RING_C * (1 - u)).toFixed(2));
+const REV_DASH = table(400, u => (REV_C * u).toFixed(2));
 
 // CSS подключаем сами; промис резолвится, когда стиль и шрифт готовы (для скриншотов)
 function ensureAssets() {
@@ -21,29 +24,51 @@ function ensureAssets() {
     link.addEventListener("load", res, { once: true });
     link.addEventListener("error", res, { once: true });
   });
+  // оба сабсета (кириллица + латиница) и оба веса, иначе первый кадр уйдёт фолбэком
   return cssReady.then(() => Promise.all([
-    document.fonts.load('900 32px "RizyNunito"', "РИЗИ RUN 0123456789"),
-    document.fonts.load('800 18px "RizyNunito"', "Снежная Река"),
+    document.fonts.load('900 32px "RizyNunito"', "РИЗИ RUN 0123456789 Ёё"),
+    document.fonts.load('800 18px "RizyNunito"', "Снежная Река m"),
   ]).catch(() => null));
 }
 
-const TUT_TEXT = {
-  left: "Свайп влево — сменить полосу", right: "Свайп вправо — сменить полосу",
-  up: "Свайп вверх — прыжок!", down: "Свайп вниз — подкат!", tap: "Нажми, чтобы бежать!",
+// та же раскладка клавиш, что в main.js (code, key и keyCode; русская раскладка)
+function keyOf(ev) {
+  const c = ev.code || "", k = (ev.key || "").toLowerCase(), n = ev.keyCode || ev.which || 0;
+  if (c === "Enter" || c === "NumpadEnter" || k === "enter" || n === 13) return "ENTER";
+  if (c === "Space" || k === " " || k === "spacebar" || n === 32) return "SPACE";
+  if (c === "Escape" || k === "escape" || k === "esc" || n === 27) return "ESC";
+  if (c === "KeyP" || k === "p" || k === "з" || n === 80) return "P";
+  if (c === "ArrowUp" || c === "KeyW" || k === "arrowup" || k === "w" || k === "ц" || n === 38 || n === 87) return "UP";
+  if (c === "ArrowDown" || c === "KeyS" || k === "arrowdown" || k === "s" || k === "ы" || n === 40 || n === 83) return "DOWN";
+  if (c === "ArrowLeft" || c === "KeyA" || k === "arrowleft" || k === "a" || k === "ф" || n === 37 || n === 65) return "LEFT";
+  if (c === "ArrowRight" || c === "KeyD" || k === "arrowright" || k === "d" || k === "в" || n === 39 || n === 68) return "RIGHT";
+  return "";
+}
+
+// GAME-7: подписи ≤ 5 слов; на клавиатуре — клавиши + действие
+const TUT = {
+  lane:  { touch: "Свайп вбок — сменить дорожку",  keys: ["←", "→"], alt: "/ A D", act: "сменить дорожку", dir: [1, 0] },
+  left:  { touch: "Свайп влево — сменить дорожку", keys: ["←"], alt: "/ A", act: "сменить дорожку", dir: [-1, 0] },
+  right: { touch: "Свайп вправо — сменить дорожку", keys: ["→"], alt: "/ D", act: "сменить дорожку", dir: [1, 0] },
+  up:    { touch: "Свайп вверх — прыжок", keys: ["↑"], alt: "/ W / Пробел", act: "прыжок", dir: [0, -1] },
+  down:  { touch: "Свайп вниз — подкат", keys: ["↓"], alt: "/ S", act: "подкат", dir: [0, 1] },
+  tap:   { touch: "Нажми, чтобы бежать!", keys: ["Пробел"], alt: "", act: "бежать", dir: [0, 0] },
 };
-const TUT_KEYS = { left: "←", right: "→", up: "↑", down: "↓", tap: "Пробел" };
-const TUT_DIR = { left: [-1, 0], right: [1, 0], up: [0, -1], down: [0, 1], tap: [0, 0] };
+const MODAL = { pause: 1, results: 1, settings: 1, revive: 1 };
+const OVER_PLAY = { pause: 1, revive: 1 };
 
 export function createHUD(ctx = {}, opts = {}) {
   const container = opts.container || document.body;
   const quality = ctx.quality || "med";
   const touch = opts.touch ?? (typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches);
-  const step = opts.milestoneStep || (ctx.cfg && ctx.cfg.milestoneStep) || 250;
-  const edges = opts.edges !== false;
+  const step = opts.milestoneStep || 250;
+  // красные края опасности: по умолчанию только если нет поста (LOOK-6 рисует danger-виньетку сам)
+  const edges = opts.edges ?? !(ctx.look && ctx.look.post);
 
   const root = document.createElement("div");
   root.className = `rz-hud rz-q-${quality}`;
   const R = buildDOM(root, { touch });
+  R.misWrap = R.mis.parentElement;
   container.appendChild(root);
   const ready = ensureAssets();
 
@@ -62,58 +87,99 @@ export function createHUD(ctx = {}, opts = {}) {
   const ro = typeof ResizeObserver === "function" ? new ResizeObserver(layout) : null;
   if (ro) ro.observe(container); else addEventListener("resize", layout);
 
-  // ---------- reduced motion ----------
+  // ---------- настройки и reduced motion ----------
+  const persist = opts.persist !== false;
+  const settings = { ...DEFAULT_SETTINGS, ...(opts.settings || (persist ? loadSettings() : null) || {}) };
   const mq = typeof matchMedia === "function" ? matchMedia("(prefers-reduced-motion: reduce)") : null;
-  let rm = opts.reducedMotion ?? (mq ? mq.matches : false);
-  const onMQ = e => { if (opts.reducedMotion == null) setReducedMotion(e.matches); };
+  let forcedRm = opts.reducedMotion != null ? !!opts.reducedMotion : null;     // стенд/тесты: жёстко
+  let rm = false;
+  const wantRm = () => forcedRm != null ? forcedRm : settings.reducedMotion != null ? settings.reducedMotion : !!(mq && mq.matches);
+  const onMQ = () => applyRm();
   if (mq && mq.addEventListener) mq.addEventListener("change", onMQ);
-  root.classList.toggle("rz-rm", rm); clock.setReduced(rm);
 
-  // ---------- ввод: кнопки и «глушилка» для слушателей main на window ----------
-  const stopEv = ev => ev.stopPropagation();
-  const STOP = ["pointerdown", "pointerup", "mousedown", "touchstart", "touchend", "click"];
-  const guard = el => { for (const t of STOP) el.addEventListener(t, stopEv, { passive: true }); };
-  [R.pauseBtn, R.gear, R.pause, R.results].forEach(guard);
+  // ---------- ввод ----------
+  // Кнопки, карточки и затемнения глушат всплытие на корне HUD: слушатели main на window не видят этих нажатий,
+  // а делегат кликов ниже (тоже на корне) их видит. Тап по титулу (.rz-title-tap) пропускаем — старт делает main.
+  const STOP_SEL = "button, input, .rz-card, .rz-shade";
+  const onStopEv = ev => { const t = ev.target; if (t && t.closest && t.closest(STOP_SEL)) ev.stopPropagation(); };
+  const STOP = ["pointerdown", "pointerup", "mousedown", "mouseup", "touchstart", "touchend", "click", "dblclick", "contextmenu"];
+  for (const t of STOP) root.addEventListener(t, onStopEv, { passive: true });
 
-  let screen = "none", overlay = null, locked = false, resResolve = null;
+  let screen = "none", locked = false, resResolve = null, settingsOpen = false;
+  const top = () => (settingsOpen ? "settings" : screen);
+
   function act(name) {
-    if (name === "restart" || name === "menu") {
-      if (screen !== "results" || locked) { if (screen === "pause" && name === "menu") emit("menu"); return; }
-      const r = resResolve; resResolve = null;
-      emit(name);
-      if (r) r(name);
-      return;
+    switch (name) {
+      case "restart": case "menu":
+        if (settingsOpen) return;
+        if (screen === "results") {
+          if (locked) return;
+          const r = resResolve; resResolve = null;
+          emit(name); if (r) r(name);
+        } else if (screen === "pause" && name === "menu") emit("menu");
+        return;
+      case "pause": if (screen === "play" && !settingsOpen) emit("pause"); return;
+      case "resume": if (screen === "pause" && !settingsOpen) emit("resume"); return;
+      case "settings": openSettings(); return;
+      case "close": closeSettings(); return;
+      case "revive": case "decline": finishRevive(name); return;
+      case "tutorial": if (settingsOpen) closeSettings(); emit("tutorial"); return;
+      case "tutorial:skip": emit("tutorial:skip"); return;
     }
-    emit(name);
   }
   root.addEventListener("click", ev => {
-    const b = ev.target.closest("[data-act]");
+    const b = ev.target.closest && ev.target.closest("[data-act],[data-set],[data-rm]");
     if (!b || !root.contains(b)) return;
-    const a = b.dataset.act;
-    if (a === "start") return;              // старт на титуле — pointerup ниже
-    act(a);
+    if (b.dataset.set) return toggleSetting(b.dataset.set);
+    if (b.dataset.rm) return setRmChoice(b.dataset.rm);
+    if (b.dataset.act !== "start") act(b.dataset.act);
   });
-  // тап по титулу: событие start (main и так стартует по своему pointerdown — адаптер решает, слушать ли)
-  R.title.querySelector(".rz-title-tap").addEventListener("pointerup", () => emit("start"));
-  const onVol = () => {
-    R.volM.style.setProperty("--v", R.volM.value + "%"); R.volS.style.setProperty("--v", R.volS.value + "%");
-    emit("volume", { music: R.volM.value / 100, sfx: R.volS.value / 100 });
-  };
-  R.volM.addEventListener("input", onVol); R.volS.addEventListener("input", onVol);
+  // тап по титулу: событие start (main и так стартует по своему pointerdown — адаптер стартует, только если G.mode всё ещё "title")
+  R.title.querySelector(".rz-title-tap").addEventListener("pointerup", () => { if (screen === "title" && !settingsOpen) emit("start"); });
 
-  // клавиши на карточке результатов: блокировка 1 с, дальше Space/Enter/↑ = «Ещё раз!», Esc = меню.
-  // Слушаем в фазе capture и глушим событие, чтобы main не перезапустил забег мимо HUD.
-  const onKey = ev => {
-    if (screen !== "results" || opts.keys === false) return;
-    const c = ev.code;
-    const isGo = c === "Space" || c === "Enter" || c === "NumpadEnter" || c === "ArrowUp" || c === "KeyW";
-    const isEsc = c === "Escape";
-    if (!isGo && !isEsc) return;
-    ev.preventDefault(); ev.stopImmediatePropagation();
-    if (locked || ev.repeat) return;
-    act(isGo ? "restart" : "menu");
+  // громкости: 4 слайдера (пауза + настройки) синхронны; emit на input, запись на change
+  const RANGES = [R.volM, R.volS, R.setVolM, R.setVolS];
+  function syncRanges() {
+    const m = Math.round(settings.music * 100), s = Math.round(settings.sfx * 100);
+    for (const r of RANGES) { const v = r.dataset.vol === "music" ? m : s; if (+r.value !== v) r.value = v; r.style.setProperty("--v", v + "%"); }
+  }
+  for (const r of RANGES) {
+    r.addEventListener("input", () => {
+      settings[r.dataset.vol] = r.value / 100;
+      syncRanges();
+      emit("volume", { music: settings.music, sfx: settings.sfx });
+    });
+    r.addEventListener("change", () => commitSettings());
+  }
+
+  // Клавиши модальных экранов (пауза, результаты, настройки, revive). Слушаем в capture на window:
+  // фокус вне HUD → глушим событие целиком (main не перезапустит забег мимо блокировки);
+  // фокус на кнопке/слайдере HUD → даём нативную активацию, а до main не пускает слушатель на корне.
+  const onKeyCapture = ev => {
+    if (opts.keys === false) return;
+    const k = keyOf(ev);
+    if (!k) return;
+    const t = top();
+    if (t === "play") {
+      if ((k === "ESC" || k === "P") && !ev.repeat) { ev.preventDefault(); act("pause"); }
+      return;
+    }
+    if (!MODAL[t]) return;
+    const inHud = root.contains(ev.target);
+    if (!inHud) ev.stopImmediatePropagation();
+    const el = inHud && ev.target.closest ? ev.target.closest("button, input") : null;
+    if (el && (k === "ENTER" || k === "SPACE" || (el.tagName === "INPUT" && k !== "ESC"))) return;
+    ev.preventDefault();
+    if (ev.repeat) return;
+    const go = k === "ENTER" || k === "SPACE";
+    if (t === "results") { if (go || k === "UP") act("restart"); else if (k === "ESC") act("menu"); }
+    else if (t === "pause") { if (go || k === "ESC" || k === "P") act("resume"); }
+    else if (t === "settings") { if (k === "ESC") act("close"); }
+    else if (t === "revive") { if (go) act("revive"); else if (k === "ESC") act("decline"); }
   };
-  addEventListener("keydown", onKey, true);
+  const onKeyRoot = ev => { if (MODAL[top()]) ev.stopPropagation(); };
+  addEventListener("keydown", onKeyCapture, true);
+  root.addEventListener("keydown", onKeyRoot);
 
   // ---------- состояние игрового HUD ----------
   const distN = numView(R.distN, 6), goalN = numView(R.goal, 5), leftN = numView(R.left, 4);
@@ -128,50 +194,109 @@ export function createHUD(ctx = {}, opts = {}) {
   let dTarget = 0, dShown = 0, dPhase = 0, vigIdx = -1, swOpIdx = -1, swFillIdx = -1;
   let hudTime = 0, lastToast = -99, lblNext = 0, lblSide = 1;
   const flyBusy = [false, false, false];
+  const flashTimes = new Float64Array(3).fill(-9); let flashI = 0;
 
   // ---------- экраны ----------
-  const SCREENS = { play: R.play, title: R.title, pause: R.pause, results: R.results };
+  const SCREENS = { play: R.play, title: R.title, pause: R.pause, results: R.results, revive: R.revive };
+  let titleLeaving = false;
   function show(name) {
+    if (name !== "none" && !SCREENS[name]) return;
     const prev = screen;
     if (name === prev) return;
     screen = name;
-    // пауза — оверлей поверх игры; результаты скрывают игровой HUD
-    const base = name === "pause" ? "play" : name;
+    // пауза и revive — оверлеи поверх игры; результаты скрывают игровой HUD
+    const base = OVER_PLAY[name] ? "play" : name;
     for (const k in SCREENS) {
       const on = k === base || k === name;
       const el = SCREENS[k];
-      if (!on && !el.hidden) { clock.cancelGroup(k); if (k !== "play") clock.clearEl(el); el.hidden = true; }
-      else if (on && el.hidden) { el.hidden = false; enter(k); }
+      if (!on && !el.hidden && !(k === "title" && titleLeaving)) leave(k, el);
+      else if (on && (el.hidden || (k === "title" && titleLeaving))) {
+        if (k === "title" && titleLeaving) { titleLeaving = false; clock.clearEl(el); }
+        el.hidden = false; enter(k, prev);
+      }
     }
-    if (name !== "results") { locked = false; }
-    if (name !== "play" && name !== "pause") hideTransient();
+    if (name !== "results") locked = false;
+    if (name !== "revive" && revResolve) finishRevive("cancel");
+    if (name !== "play" && name !== "pause" && name !== "revive") hideTransient();
+    if (settingsOpen && name !== "title" && name !== "pause") closeSettings();
+    // фокус не должен остаться на скрытой кнопке (иначе Пробел «нажмёт» её)
+    const ae = document.activeElement;
+    if (ae && root.contains(ae) && ae.closest("[hidden]")) ae.blur();
     emit("screen", name);
+  }
+  function leave(k, el) {
+    clock.cancelGroup(k);
+    if (k === "title") {
+      // CAM-4: UI титула гаснет за 200 мс
+      titleLeaving = true;
+      clock.play(el, [{ opacity: 1 }, { opacity: 0 }], { duration: 200, easing: "linear" },
+        { chan: "leave", done: () => { titleLeaving = false; clock.clearEl(el); el.hidden = true; } });
+      return;
+    }
+    if (k !== "play") clock.clearEl(el);
+    el.hidden = true;
   }
   function hideTransient() {
     tutorial(null);
     clock.clearEl(R.cd); clock.clearEl(R.banner); clock.clearEl(R.toast);
   }
-  function enter(k) {
-    const d = rm ? 1 : 1;       // длительности масштабируются ниже по месту
+  function enter(k, prev) {
     if (k === "title") {
       clock.play(R.logo, rm
         ? [{ opacity: 0 }, { opacity: 1 }]
         : [{ opacity: 0, transform: "translateY(-40px) scale(.8)" }, { opacity: 1, transform: "translateY(0) scale(1)" }],
         { duration: rm ? 300 : 550, delay: rm ? 0 : 150, easing: EASE.outBack }, { keep: true, chan: "in", group: "title" });
       clock.play(R.titleBot, [{ opacity: 0, transform: rm ? "none" : "translateY(18px)" }, { opacity: 1, transform: "none" }],
-        { duration: 320 * d, delay: rm ? 0 : 420, easing: EASE.outCubic }, { keep: true, chan: "in", group: "title" });
+        { duration: 320, delay: rm ? 0 : 420, easing: EASE.outCubic }, { keep: true, chan: "in", group: "title" });
       if (!rm) clock.play(R.prompt, [{ opacity: 1 }, { opacity: 0.55 }, { opacity: 1 }],
         { duration: 1400, delay: 750, iterations: Infinity, easing: "ease-in-out" }, { chan: "pulse", group: "title" });
     } else if (k === "play") {
       enSpring.reset(); distSpring.reset();
       for (const el of [R.tl, R.tr]) clock.play(el, [{ opacity: 0, transform: rm ? "none" : "translateY(-14px)" }, { opacity: 1, transform: "none" }],
-        { duration: rm ? 200 : 320, easing: EASE.outBack }, { chan: "in" });
+        { duration: rm ? 200 : 320, delay: prev === "title" ? 150 : 0, easing: EASE.outBack }, { chan: "in" });
     } else if (k === "pause") {
       clock.play(R.pauseShade, [{ opacity: 0 }, { opacity: 1 }], { duration: rm ? 1 : 180, easing: "linear" }, { keep: true, chan: "in", group: "pause" });
       clock.play(R.pauseCard, [{ opacity: 0, transform: rm ? "none" : "scale(.9)" }, { opacity: 1, transform: "none" }],
         { duration: rm ? 1 : 220, easing: EASE.outBack }, { keep: true, chan: "in", group: "pause" });
       clock.after(rm ? 1 : 200, () => R.resumeBtn.focus({ preventScroll: true }), "pause");
     }
+  }
+
+  // ---------- настройки (HUD-8) ----------
+  function applySettingsUI() {
+    const rmv = settings.reducedMotion == null ? "auto" : settings.reducedMotion ? "on" : "off";
+    for (const b of R.setRm) b.setAttribute("aria-pressed", String(b.dataset.rm === rmv));
+    for (const b of R.setTgl) b.setAttribute("aria-pressed", String(!!settings[b.dataset.set]));
+    syncRanges();
+  }
+  function commitSettings() {
+    if (persist) saveSettings(settings);
+    emit("settings:change", settings);
+  }
+  function toggleSetting(key) { settings[key] = !settings[key]; applySettingsUI(); commitSettings(); }
+  function setRmChoice(v) {
+    settings.reducedMotion = v === "auto" ? null : v === "on";
+    applySettingsUI(); applyRm(); commitSettings();
+  }
+  function openSettings() {
+    if (settingsOpen) return;
+    settingsOpen = true;
+    applySettingsUI();
+    R.settings.hidden = false;
+    clock.play(R.setShade, [{ opacity: 0 }, { opacity: 1 }], { duration: rm ? 1 : 200, easing: "linear" }, { keep: true, chan: "in", group: "settings" });
+    clock.play(R.setCard, [{ opacity: 0, transform: rm ? "none" : "translateY(24px) scale(.96)" }, { opacity: 1, transform: "none" }],
+      { duration: rm ? 1 : 200, easing: EASE.outCubic }, { keep: true, chan: "in", group: "settings" });
+    clock.after(rm ? 1 : 120, () => R.setClose.focus({ preventScroll: true }), "settings");
+    emit("settings", settings);
+  }
+  function closeSettings() {
+    if (!settingsOpen) return;
+    settingsOpen = false;
+    clock.cancelGroup("settings"); clock.clearEl(R.settings);
+    R.settings.hidden = true;
+    const back = screen === "pause" ? R.resumeBtn : screen === "title" ? R.gear : null;
+    if (back) back.focus({ preventScroll: true });
+    emit("settings:close", settings);
   }
 
   // ---------- числа ----------
@@ -242,7 +367,7 @@ export function createHUD(ctx = {}, opts = {}) {
 
   // ---------- всплывающие метки ----------
   const LBL_KIND = { plus: "", big: "big", nice: "nice", warn: "warn", info: "info" };
-  function popLabel(text, kind = "plus", x, y) {
+  function popLabel(text, kind = "plus", x, y, dur) {
     const n = quality === "low" ? 6 : 10;
     const i = lblNext; lblNext = (lblNext + 1) % n;
     const wrap = R.labels[i], span = R.labelSpans[i];
@@ -251,7 +376,8 @@ export function createHUD(ctx = {}, opts = {}) {
     span.textContent = text;
     lblSide = -lblSide;
     const px = x != null ? x : W / 2 + (kind === "nice" ? 0 : lblSide * 22);
-    const py = y != null ? y : H * (kind === "nice" ? 0.33 : 0.4);
+    // в портрете миссия стоит ниже — «ЛОВКО!» поднимаем из-под неё
+    const py = y != null ? y : H * (kind === "nice" ? (portrait ? 0.42 : 0.33) : 0.4);
     wrap.style.transform = `translate3d(${px.toFixed(1)}px,${py.toFixed(1)}px,0)`;
     const rot = kind === "nice" ? " rotate(-4deg)" : "";
     const T = "translate(-50%,-50%) ";
@@ -262,7 +388,7 @@ export function createHUD(ctx = {}, opts = {}) {
         { offset: 0.14, opacity: 1, transform: `${T}translateY(-14px) scale(1.18)${rot}` },
         { offset: 0.6, opacity: 1, transform: `${T}translateY(-44px) scale(1)${rot}` },
         { offset: 1, opacity: 0, transform: `${T}translateY(-70px) scale(.92)${rot}` },
-      ], { duration: kind === "nice" ? 900 : 700, easing: EASE.label }, { chan: "p" });
+      ], { duration: dur || (kind === "nice" ? 900 : 700), easing: EASE.label }, { chan: "p" });
   }
 
   // ---------- комбо ----------
@@ -301,7 +427,9 @@ export function createHUD(ctx = {}, opts = {}) {
   }
 
   // ---------- миссия ----------
+  // шаблон "Перепрыгни {n} {валик|валика|валиков}": число катится, слово меняет форму вместе с числом
   let misTpl = null, misN = null, misProg = 0, misStarsN = -1, misRoll = null;
+  const misForms = [];
   function renderStars(el, filled, total) {
     let s = "";
     for (let i = 0; i < total; i++) s += R.starSVG(i < filled);
@@ -309,19 +437,26 @@ export function createHUD(ctx = {}, opts = {}) {
   }
   function buildMissionText(tpl, n) {
     R.misTxt.textContent = "";
-    const parts = tpl.split("{n}");
-    misRoll = null;
-    parts.forEach((p, i) => {
-      if (p) R.misTxt.appendChild(document.createTextNode(p.trim() === "" ? " " : p));
-      if (i < parts.length - 1) {
+    misRoll = null; misForms.length = 0;
+    for (const p of parseTemplate(tpl)) {
+      if (p.t === "text") R.misTxt.appendChild(document.createTextNode(p.s));
+      else if (p.t === "n") {
         misRoll = document.createElement("span");
         misRoll.className = "rz-mis-roll";
-        misRoll.innerHTML = `<span>${n}</span>`;
+        const s = document.createElement("span"); s.textContent = String(n ?? "");
+        misRoll.appendChild(s);
         R.misTxt.appendChild(misRoll);
+      } else {
+        const s = document.createElement("span");
+        s.textContent = pluralRu(n ?? 0, p.forms[0], p.forms[1], p.forms[2]);
+        misForms.push({ el: s, forms: p.forms });
+        R.misTxt.appendChild(s);
       }
-    });
+    }
   }
+  // setMission(tpl, progress, {n, stars, total, intro}) или setMission(view) из progress.createMissions().view()
   function setMission(text, progress = 0, o = {}) {
+    if (text && typeof text === "object") { o = text; progress = o.progress || 0; text = o.tpl || o.text; }
     if (text == null) { R.mis.hidden = true; misTpl = null; return; }
     const wasHidden = R.mis.hidden;
     R.mis.hidden = false;
@@ -329,16 +464,20 @@ export function createHUD(ctx = {}, opts = {}) {
     if (text !== misTpl) {
       misTpl = text; misN = n;
       buildMissionText(text, n);
-    } else if (n != null && n !== misN && misRoll) {
-      // шаг: старое число уходит вверх, новое приходит снизу
-      const old = misRoll.firstElementChild;
-      const nu = document.createElement("span"); nu.textContent = String(n);
-      misRoll.appendChild(nu);
+    } else if (n != null && n !== misN) {
       misN = n;
-      if (rm) { old.remove(); }
-      else {
-        clock.play(old, [{ transform: "translateY(0)", opacity: 1 }, { transform: "translateY(-100%)", opacity: 0 }], { duration: 160, easing: EASE.outCubic }, { done: () => old.remove() });
-        clock.play(nu, [{ transform: "translateY(100%)", opacity: 0 }, { transform: "translateY(0)", opacity: 1 }], { duration: 160, easing: EASE.outCubic });
+      for (const f of misForms) f.el.textContent = pluralRu(n, f.forms[0], f.forms[1], f.forms[2]);
+      if (misRoll) {
+        // шаг: старое число уходит вверх, новое приходит снизу (160 мс easeOutCubic)
+        while (misRoll.children.length > 1) misRoll.firstElementChild.remove();
+        const old = misRoll.firstElementChild;
+        const nu = document.createElement("span"); nu.textContent = String(n);
+        misRoll.appendChild(nu);
+        if (rm || !old) { if (old) old.remove(); }
+        else {
+          clock.play(old, [{ transform: "translateY(0)", opacity: 1 }, { transform: "translateY(-100%)", opacity: 0 }], { duration: 160, easing: EASE.outCubic }, { keep: true, done: () => old.remove() });
+          clock.play(nu, [{ transform: "translateY(100%)", opacity: 0 }, { transform: "translateY(0)", opacity: 1 }], { duration: 160, easing: EASE.outCubic });
+        }
       }
       emit("mission:step", n);
     }
@@ -349,8 +488,9 @@ export function createHUD(ctx = {}, opts = {}) {
       { duration: rm || wasHidden ? 1 : 250, easing: EASE.outCubic }, { keep: true, chan: "bar" });
     misProg = p;
     if (o.intro) {
-      const top = R.mis.offsetTop || 16;
-      const dy = Math.max(0, H * (portrait ? 0.27 : 0.25) - top);
+      // крупно по центру 2.5 с, затем сжатие в пилюлю за 400 мс easeInOutCubic
+      const topPx = R.misWrap.offsetTop || 16;
+      const dy = Math.max(0, H * (portrait ? 0.27 : 0.25) - topPx);
       clock.play(R.mis, rm
         ? [{ opacity: 0 }, { opacity: 1, offset: 0.1 }, { opacity: 1 }]
         : [
@@ -365,9 +505,9 @@ export function createHUD(ctx = {}, opts = {}) {
     return new Promise(resolve => {
       const total = o.total || 3, filled = o.stars != null ? o.stars : Math.min(total, misStarsN + 1);
       renderStars(R.misStarsDone, filled, total);
-      const k = rm ? 1 : 1;
-      const wide = 340 / 280;
-      clock.play(R.misBg, [{ transform: "scaleX(1)" }, { transform: `scaleX(${wide})` }], { duration: 200 * k, easing: EASE.outBack }, { keep: true, chan: "w" });
+      const w = R.mis.offsetWidth || 280;
+      const wide = (w + 60) / w;                            // 280 → 340 px, как в HUD-4
+      clock.play(R.misBg, [{ transform: "scaleX(1)" }, { transform: `scaleX(${wide})` }], { duration: rm ? 1 : 200, easing: EASE.outBack }, { keep: true, chan: "w" });
       clock.play(R.misLime, [{ opacity: 0, transform: "scaleX(1)" }, { opacity: 1, transform: `scaleX(${wide})` }], { duration: 200, easing: EASE.outBack }, { keep: true, chan: "w" });
       clock.play(R.misIn, [{ opacity: 1 }, { opacity: 0 }], { duration: 120 }, { keep: true, chan: "o" });
       clock.play(R.misBar, [{ opacity: 1 }, { opacity: 0 }], { duration: 120 }, { keep: true, chan: "o" });
@@ -388,7 +528,7 @@ export function createHUD(ctx = {}, opts = {}) {
         clock.play(R.misLime, [{ opacity: 1, transform: `scaleX(${wide})` }, { opacity: 0, transform: "scaleX(1)" }], { duration: 220, easing: EASE.outCubic }, { keep: true, chan: "w" });
         clock.play(R.misBg, [{ transform: `scaleX(${wide})` }, { transform: "scaleX(1)" }], { duration: 220, easing: EASE.outCubic }, { keep: true, chan: "w" });
         const nx = o.next;
-        if (nx) { misProg = 0; setMission(nx.text, nx.progress || 0, nx); }
+        if (nx) { misProg = 0; setMission(nx.tpl || nx.text, nx.progress || 0, nx); }
         else { clock.after(220, () => { R.mis.hidden = true; misTpl = null; }); }
         clock.play(R.misIn, [{ opacity: 0, transform: rm ? "none" : "translateX(60px)" }, { opacity: 1, transform: "none" }], { duration: 300, delay: 120, easing: EASE.outCubic }, { keep: true, chan: "o" });
         clock.play(R.misBar, [{ opacity: 0 }, { opacity: 1 }], { duration: 300, delay: 120 }, { keep: true, chan: "o" });
@@ -400,45 +540,78 @@ export function createHUD(ctx = {}, opts = {}) {
   // ---------- опасность ----------
   function setDanger(d) { dTarget = clamp(d || 0, 0, 1); }
 
-  // ---------- отсчёт ----------
+  // ---------- отсчёт и «ВПЕРЁД!» ----------
+  const CD_T = "translate(-50%,-50%) ";
+  // HUD-3: цифра 600 мс — вход scale 2→1 + fade 180 мс easeOutBack, держать 270 мс, уход scale .7 + fade 150 мс
   function countdown(n) {
+    if (!(n > 0)) return go();
     return new Promise(resolve => {
-      const go = !(n > 0);
-      R.cd.classList.toggle("go", go);
-      R.cdTxt.textContent = go ? "ВПЕРЁД!" : String(n);
-      const T = "translate(-50%,-50%) ";
+      R.cd.classList.remove("go");
+      R.cdTxt.textContent = String(n);
       clock.play(R.cdTxt, rm
-        ? [{ opacity: 0, transform: T }, { opacity: 1, offset: 0.3, transform: T }, { opacity: 1, offset: 0.75, transform: T }, { opacity: 0, transform: T }]
+        ? [{ opacity: 0, transform: CD_T }, { opacity: 1, offset: 0.3, transform: CD_T }, { opacity: 1, offset: 0.75, transform: CD_T }, { opacity: 0, transform: CD_T }]
         : [
-          { offset: 0, opacity: 0, transform: T + "scale(2)", easing: EASE.outBack },
-          { offset: 0.3, opacity: 1, transform: T + "scale(1)" },
-          { offset: 0.75, opacity: 1, transform: T + "scale(1)", easing: EASE.inCubic },
-          { offset: 1, opacity: 0, transform: T + "scale(.7)" }],
+          { offset: 0, opacity: 0, transform: CD_T + "scale(2)", easing: EASE.outBack },
+          { offset: 0.3, opacity: 1, transform: CD_T + "scale(1)" },
+          { offset: 0.75, opacity: 1, transform: CD_T + "scale(1)", easing: EASE.inCubic },
+          { offset: 1, opacity: 0, transform: CD_T + "scale(.7)" }],
         { duration: 600, easing: "linear" }, { chan: "cd", done: resolve });
-      R.cd.style.opacity = "1";
-      emit(go ? "go" : "countdown", n);
+      emit("countdown", n);
+    });
+  }
+  // CAM-4: scale .4→1.25 за 160 мс → 1 за 140 мс, держать 250 мс, уход scale 1.5 + fade 220 мс easeInCubic
+  // (сумма сегментов 770 мс; «на 700 мс» в библии — округление, сегменты приоритетнее)
+  function go() {
+    return new Promise(resolve => {
+      R.cd.classList.add("go");
+      R.cdTxt.textContent = TXT.go;
+      const D = 770;
+      clock.play(R.cdTxt, rm
+        ? [{ opacity: 0, transform: CD_T }, { opacity: 1, offset: 0.2, transform: CD_T }, { opacity: 1, offset: 550 / D, transform: CD_T }, { opacity: 0, transform: CD_T }]
+        : [
+          { offset: 0, opacity: 0, transform: CD_T + "scale(.4)", easing: EASE.outCubic },
+          { offset: 160 / D, opacity: 1, transform: CD_T + "scale(1.25)", easing: EASE.outCubic },
+          { offset: 300 / D, opacity: 1, transform: CD_T + "scale(1)" },
+          { offset: 550 / D, opacity: 1, transform: CD_T + "scale(1)", easing: EASE.inCubic },
+          { offset: 1, opacity: 0, transform: CD_T + "scale(1.5)" }],
+        { duration: D, easing: "linear" }, { chan: "cd", done: resolve });
+      emit("go");
     });
   }
   async function runCountdown(from = 3) {
     for (let i = from; i >= 1; i--) await countdown(i);
-    await countdown(0);
+    await go();
   }
 
-  // ---------- рубеж и тосты ----------
-  function milestone(m) {
-    R.bannerTxt.textContent = `${m} м!`;
+  // ---------- баннер, рубеж и тосты ----------
+  // HUD-6: лаймовая лента, вход 280 мс easeOutBack, держать 1.2 с, уход 200 мс
+  function banner(text, o) {
+    // слова с дефисом («по-настоящему») — в неразрывный span, чтобы строка не рвалась на «по-»
+    R.bannerTxt.textContent = "";
+    const words = text.split(" ");
+    for (let i = 0; i < words.length; i++) {
+      if (i) R.bannerTxt.appendChild(document.createTextNode(" "));
+      if (words[i].indexOf("-") > 0) { const s = document.createElement("span"); s.textContent = words[i]; R.bannerTxt.appendChild(s); }
+      else R.bannerTxt.appendChild(document.createTextNode(words[i]));
+    }
+    R.banner.classList.toggle("long", text.length > 12);
+    const hold = (o && o.hold) || 1200, D = 280 + hold + 200;
     clock.play(R.banner, rm
-      ? [{ opacity: 0 }, { opacity: 1, offset: 0.1 }, { opacity: 1, offset: 0.88 }, { opacity: 0 }]
+      ? [{ opacity: 0 }, { opacity: 1, offset: 0.1 }, { opacity: 1, offset: (280 + hold) / D }, { opacity: 0 }]
       : [
         { offset: 0, opacity: 0, transform: "translateY(-24px) scale(.6)", easing: EASE.outBack },
-        { offset: 280 / 1680, opacity: 1, transform: "translateY(0) scale(1)" },
-        { offset: 1480 / 1680, opacity: 1, transform: "translateY(0) scale(1)", easing: EASE.inCubic },
+        { offset: 280 / D, opacity: 1, transform: "translateY(0) scale(1)" },
+        { offset: (280 + hold) / D, opacity: 1, transform: "translateY(0) scale(1)", easing: EASE.inCubic },
         { offset: 1, opacity: 0, transform: "translateY(-16px) scale(.9)" }],
-      { duration: 1680, easing: "linear" }, { chan: "b" });
+      { duration: D, easing: "linear" }, { chan: "b" });
+  }
+  function milestone(m) {
+    banner(`${m} м!`);
     if (!rm) clock.play(R.distPill, [{ transform: "scale(1)" }, { transform: "scale(1.35)", offset: 0.4 }, { transform: "scale(1)" }],
       { duration: 350, easing: EASE.outCubic }, { chan: "m" });
     emit("milestone", m);
   }
+  // тосты не чаще раза в 8 с, 2.2 с, верхняя треть
   function toast(text, o) {
     if (!(o && o.force) && hudTime - lastToast < 8) return false;
     lastToast = hudTime;
@@ -450,73 +623,147 @@ export function createHUD(ctx = {}, opts = {}) {
         { offset: 0.11, opacity: 1, transform: "none" },
         { offset: 0.9, opacity: 1, transform: "none", easing: EASE.inCubic },
         { offset: 1, opacity: 0, transform: "translateY(-12px)" }],
-      { duration: 2200, easing: "linear" }, { chan: "t" });
+      { duration: (o && o.duration) || 2200, easing: "linear" }, { chan: "t" });
+    return true;
+  }
+  // HUD-8: ограничитель вспышек ≤ 3 в секунду (для bloom/краёв/конфетти — спрашивать перед вспышкой)
+  function allowFlash() {
+    const oldest = flashTimes[flashI];
+    if (hudTime - oldest < 1) return false;
+    flashTimes[flashI] = hudTime; flashI = (flashI + 1) % 3;
     return true;
   }
 
-  // ---------- туториал ----------
-  let tutStep = null;
+  // ---------- туториал (GAME-7) ----------
+  // рука белая 75% + лаймовый след: fade 150 мс → свайп 90 px за 600 мс ease-in-out → fade 150 мс → пауза 250 мс
+  let tutStep = null, tutArg = null;
+  const CYCLE = 1150;
   function tutorial(stepArg) {
     const g = stepArg == null ? null : (typeof stepArg === "string" ? stepArg : stepArg.gesture);
     clock.cancelGroup("tut");
     clock.clearEl(R.tut);
-    tutStep = g;
-    if (!g || !TUT_DIR[g]) { R.tut.hidden = true; return; }
+    tutStep = g; tutArg = stepArg;
+    if (!g || !TUT[g]) { R.tut.hidden = true; return; }
+    const def = TUT[g];
     R.tut.hidden = false;
-    R.tutTxt.textContent = (typeof stepArg === "object" && stepArg.text) || TUT_TEXT[g];
-    R.tutKeys.innerHTML = touch ? "" : `<span class="rz-key">${TUT_KEYS[g]}</span>`;
-    const [dx, dy] = TUT_DIR[g], L = portrait ? 90 : 120;
+    R.tutSkip.hidden = !(typeof stepArg === "object" && stepArg.skip);
+    const custom = typeof stepArg === "object" && stepArg.text;
+    if (touch || custom) { R.tutKeys.textContent = ""; R.tutTxt.textContent = custom || def.touch; }
+    else {
+      let k = "";
+      for (const c of def.keys) k += `<span class="rz-key">${c}</span>`;
+      if (def.alt) k += `<span class="rz-key-alt">${def.alt}</span>`;
+      R.tutKeys.innerHTML = k;
+      R.tutTxt.textContent = "— " + def.act;
+    }
+    const [dx, dy] = def.dir, L = 90;
     const sx = -dx * L / 2, sy = -dy * L / 2, ex = dx * L / 2, ey = dy * L / 2;
     const ang = Math.atan2(dy, dx) * 180 / Math.PI;
     const tr = (x, y, s = 1) => `translate(${x}px,${y}px) scale(${s})`;
     const O = { group: "tut", keep: true };
-    clock.play(R.tutCard, [{ opacity: 0, transform: "translateX(-50%) translateY(12px)" }, { opacity: 1, transform: "translateX(-50%)" }],
+    clock.play(R.tutCard, [{ opacity: 0, transform: rm ? "translateX(-50%)" : "translateX(-50%) translateY(12px)" }, { opacity: 1, transform: "translateX(-50%)" }],
       { duration: rm ? 1 : 260, easing: EASE.outBack }, O);
+    R.tutTrail.style.width = L + "px";
     if (rm) {
       // статичная подсказка: рука в конце жеста и полный след
-      R.tutHand.style.opacity = "1"; R.tutHand.style.transform = tr(ex, ey);
+      R.tutHand.style.opacity = ".75"; R.tutHand.style.transform = tr(ex, ey);
       R.tutTrail.style.opacity = g === "tap" ? "0" : ".9";
-      R.tutTrail.style.width = L + "px";
       R.tutTrail.style.transform = `translate(${sx}px,${sy}px) rotate(${ang}deg)`;
       R.tutDot.style.opacity = g === "tap" ? "1" : "0";
+      emit("tutorial:shown", g);
       return;
     }
-    R.tutHand.style.opacity = ""; R.tutHand.style.transform = ""; R.tutTrail.style.opacity = ""; R.tutDot.style.opacity = "";
-    const LOOP = { duration: 1400, iterations: Infinity, easing: "linear" };
+    R.tutHand.style.opacity = ""; R.tutHand.style.transform = ""; R.tutTrail.style.opacity = ""; R.tutTrail.style.transform = ""; R.tutDot.style.opacity = "";
+    const LOOP = { duration: CYCLE, iterations: Infinity, easing: "linear" };
+    const a = 150 / CYCLE, b = 750 / CYCLE, c = 900 / CYCLE;
     if (g === "tap") {
       clock.play(R.tutHand, [
         { offset: 0, opacity: 0, transform: tr(0, 14, 1.2) },
-        { offset: 0.15, opacity: 1, transform: tr(0, 0, 1), easing: EASE.outCubic },
-        { offset: 0.3, opacity: 1, transform: tr(0, 0, 0.88) },
-        { offset: 0.45, opacity: 1, transform: tr(0, 0, 1) },
-        { offset: 0.8, opacity: 0, transform: tr(0, 0, 1) }, { offset: 1, opacity: 0, transform: tr(0, 0, 1) }], LOOP, O);
+        { offset: a, opacity: 0.75, transform: tr(0, 0, 1), easing: EASE.outCubic },
+        { offset: 0.35, opacity: 0.75, transform: tr(0, 0, 0.88) },
+        { offset: 0.5, opacity: 0.75, transform: tr(0, 0, 1) },
+        { offset: c, opacity: 0, transform: tr(0, 0, 1) }, { offset: 1, opacity: 0, transform: tr(0, 0, 1) }], LOOP, O);
       clock.play(R.tutDot, [
-        { offset: 0, opacity: 0, transform: "scale(.4)" }, { offset: 0.3, opacity: 0, transform: "scale(.4)" },
-        { offset: 0.34, opacity: 1, transform: "scale(.6)", easing: EASE.outCubic },
-        { offset: 0.7, opacity: 0, transform: "scale(1.8)" }, { offset: 1, opacity: 0, transform: "scale(1.8)" }], LOOP, O);
+        { offset: 0, opacity: 0, transform: "scale(.4)" }, { offset: 0.35, opacity: 0, transform: "scale(.4)" },
+        { offset: 0.38, opacity: 1, transform: "scale(.6)", easing: EASE.outCubic },
+        { offset: 0.75, opacity: 0, transform: "scale(1.8)" }, { offset: 1, opacity: 0, transform: "scale(1.8)" }], LOOP, O);
       clock.play(R.tutTrail, [{ opacity: 0 }, { opacity: 0 }], LOOP, O);
     } else {
-      R.tutTrail.style.width = L + "px";
-      const trail = (k, o) => ({ opacity: o, transform: `translate(${sx}px,${sy}px) rotate(${ang}deg) scaleX(${k})` });
-      clock.play(R.tutHand, [
-        { offset: 0, opacity: 0, transform: tr(sx, sy, 1.15) },
-        { offset: 0.12, opacity: 1, transform: tr(sx, sy, 1), easing: EASE.inOutCubic },
-        { offset: 0.55, opacity: 1, transform: tr(ex, ey, 1) },
-        { offset: 0.75, opacity: 0, transform: tr(ex, ey, 1.05) },
-        { offset: 1, opacity: 0, transform: tr(ex, ey, 1.05) }], LOOP, O);
-      clock.play(R.tutTrail, [
-        { offset: 0, ...trail(0, 0) }, { offset: 0.12, ...trail(0.02, 0.95), easing: EASE.inOutCubic },
-        { offset: 0.55, ...trail(1, 0.95) }, { offset: 0.75, ...trail(1, 0) }, { offset: 1, ...trail(1, 0) }], LOOP, O);
-      clock.play(R.tutDot, [
-        { offset: 0, opacity: 0, transform: `translate(${sx}px,${sy}px) scale(.5)` },
-        { offset: 0.12, opacity: 1, transform: `translate(${sx}px,${sy}px) scale(.8)`, easing: EASE.outCubic },
-        { offset: 0.4, opacity: 0, transform: `translate(${sx}px,${sy}px) scale(1.7)` },
-        { offset: 1, opacity: 0, transform: `translate(${sx}px,${sy}px) scale(1.7)` }], LOOP, O);
+      // «вбок» чередует направление: два цикла вправо и влево
+      const two = g === "lane";
+      const LP = two ? { ...LOOP, duration: CYCLE * 2 } : LOOP;
+      const hand = [], trl = [], dot = [];
+      for (let r = 0; r < (two ? 2 : 1); r++) {
+        const s = two ? 0.5 : 1, o0 = r * s, flip = r === 1 ? -1 : 1;
+        const hx = sx * flip, hy = sy, gx = ex * flip, gy = ey;
+        const tt = (k, o) => ({ opacity: o, transform: `translate(${hx}px,${hy}px) rotate(${flip < 0 ? ang + 180 : ang}deg) scaleX(${k})` });
+        hand.push(
+          { offset: o0, opacity: 0, transform: tr(hx, hy, 1.15) },
+          { offset: o0 + a * s, opacity: 0.75, transform: tr(hx, hy, 1), easing: EASE.inOutCubic },
+          { offset: o0 + b * s, opacity: 0.75, transform: tr(gx, gy, 1) },
+          { offset: o0 + c * s, opacity: 0, transform: tr(gx, gy, 1.05) },
+          { offset: o0 + s * 0.999, opacity: 0, transform: tr(gx, gy, 1.05) });
+        trl.push({ offset: o0, ...tt(0, 0) }, { offset: o0 + a * s, ...tt(0.02, 0.95), easing: EASE.inOutCubic },
+          { offset: o0 + b * s, ...tt(1, 0.95) }, { offset: o0 + c * s, ...tt(1, 0) }, { offset: o0 + s * 0.999, ...tt(1, 0) });
+        dot.push(
+          { offset: o0, opacity: 0, transform: `translate(${hx}px,${hy}px) scale(.5)` },
+          { offset: o0 + a * s, opacity: 1, transform: `translate(${hx}px,${hy}px) scale(.8)`, easing: EASE.outCubic },
+          { offset: o0 + 0.45 * s, opacity: 0, transform: `translate(${hx}px,${hy}px) scale(1.7)` },
+          { offset: o0 + s * 0.999, opacity: 0, transform: `translate(${hx}px,${hy}px) scale(1.7)` });
+      }
+      hand.push({ ...hand[hand.length - 1], offset: 1 }); trl.push({ ...trl[trl.length - 1], offset: 1 }); dot.push({ ...dot[dot.length - 1], offset: 1 });
+      clock.play(R.tutHand, hand, LP, O);
+      clock.play(R.tutTrail, trl, LP, O);
+      clock.play(R.tutDot, dot, LP, O);
     }
     emit("tutorial:shown", g);
   }
+  // верный ввод: подсказка уходит за 250 мс + «Отлично!» 0.8 с
+  function tutorialPraise(text = TXT.praise) {
+    if (tutStep) {
+      const cur = tutArg;
+      clock.cancelGroup("tut");
+      clock.play(R.tut, [{ opacity: 1 }, { opacity: 0 }], { duration: rm ? 1 : 250, easing: EASE.outCubic },
+        { group: "tut", done: () => { if (tutArg === cur) tutorial(null); } });
+    }
+    popLabel(text, "nice", null, null, 800);
+    emit("tutorial:praise");
+  }
 
-  // ---------- результаты ----------
+  // ---------- revive «Спасти Ризи?» (GAME-6) ----------
+  let revResolve = null, revOn = false, revT = 0, revDur = 4000, revArmed = false, revIdx = -1;
+  const REV_ARM = 600;
+  function revive(o = {}) {
+    if (revResolve) finishRevive("replaced");
+    const cost = Math.max(0, Math.round(o.cost ?? 50));
+    revDur = o.timeout ?? 4000;
+    R.revCost.textContent = `Спасти за ${cost}`;
+    R.revHave.textContent = o.have != null ? `У тебя ${o.have} ${pluralRu(o.have, "энергон", "энергона", "энергонов")}` : "";
+    R.revHave.hidden = o.have == null;
+    clock.clearEl(R.revive);
+    show("revive");
+    revOn = true; revT = 0; revArmed = false; revIdx = -1;
+    R.revBtns.classList.add("off");
+    R.revFill.setAttribute("stroke-dashoffset", REV_DASH[0]);
+    const G = "revive";
+    clock.play(R.revShade, [{ opacity: 0 }, { opacity: 1 }], { duration: 250, easing: "linear" }, { keep: true, chan: "in", group: G });
+    clock.play(R.revCard, [{ opacity: 0, transform: rm ? "none" : "translateY(40px) scale(.94)" }, { opacity: 1, transform: "none" }],
+      { duration: rm ? 200 : 320, easing: EASE.outBack }, { keep: true, chan: "in", group: G });
+    if (!rm) clock.play(R.revHeart, [{ transform: "scale(1)" }, { transform: "scale(1.12)", offset: 0.15 }, { transform: "scale(1)", offset: 0.35 }, { transform: "scale(1)" }],
+      { duration: 700, iterations: Infinity, easing: "ease-out" }, { chan: "beat", group: G });
+    return new Promise(res => { revResolve = res; });
+  }
+  function finishRevive(ans) {
+    if (!revResolve && !revOn) return;
+    if ((ans === "revive" || ans === "decline") && (!revOn || !revArmed)) return;   // кнопки активны через 0.6 с
+    revOn = false;
+    const r = revResolve; revResolve = null;
+    clock.cancelGroup("revive");
+    emit("revive:answer", ans);
+    if (r) r(ans);
+  }
+
+  // ---------- результаты (HUD-7) ----------
   let resT = 0, resOn = false;
   const roll = [
     { nv: rDistN, to: 0, t0: 0, dur: 1, row: 0, last: -1 },
@@ -528,29 +775,34 @@ export function createHUD(ctx = {}, opts = {}) {
     if (resResolve) { const r = resResolve; resResolve = null; r("replaced"); }
     const dist = Math.max(0, Math.round(stats.dist || 0));
     const en = Math.max(0, Math.round(stats.energons || 0));
+    // GAME-8: бонус ловкости — энергоны, дистанция не умножается; итог = энергоны + бонус
     const bonus = Math.max(0, Math.round(stats.bonus || 0));
-    const total = stats.total != null ? Math.round(stats.total) : dist + bonus;
+    const total = stats.total != null ? Math.round(stats.total) : en + bonus;
     const isBest = !!stats.isBest;
-    const bestV = Math.max(stats.best != null ? stats.best : best, isBest ? total : 0);
+    const bestV = Math.max(stats.best != null ? stats.best : best, isBest ? dist : 0);
     setBest(bestV);
 
     clock.clearEl(R.results);
     show("results");
     locked = true; resT = 0; resOn = true; tickLast = -1;
-    R.resHead.textContent = stats.title || "Рой догнал!";
+    R.resHead.textContent = stats.title || TXT.resHead;
     rDistN.set(0); rEnN.set(0); rBonusN.set(0); rTotalN.set(total);
     R.rBonus.hidden = bonus <= 0;
+    R.rTotal.hidden = bonus <= 0;                          // без бонуса итог совпадает с «Энергоны»
     R.streakChip.hidden = !(stats.streak > 1);
-    if (stats.streak > 1) R.streakChip.textContent = `День ${stats.streak} подряд`;
-    // подсказка: меньшее из «до рекорда» и «до следующей полусотни»
-    let hint = "";
-    if (isBest) hint = "Лучший забег!";
+    if (stats.streak > 1) R.streakChip.textContent = TXT.streak(stats.streak);
+    // подсказка: меньшее из «до рекорда» и «до следующих 500 м» (по дистанции — рекорд в метрах)
+    let hint;
+    if (isBest) hint = TXT.best;
     else {
-      const toRec = bestV - total;
-      const goal = (Math.floor(total / 500) + 1) * 500, left = goal - total;
-      hint = (toRec > 0 && toRec <= left) ? `+${toRec} м до рекорда` : `до ${goal} м оставалось ${left} м`;
+      const toRec = bestV - dist;
+      const goal = (Math.floor(dist / 500) + 1) * 500, left = goal - dist;
+      hint = (toRec > 0 && toRec <= left) ? TXT.toRecord(toRec) : TXT.toGoal(goal, left);
     }
     R.hint.textContent = hint;
+    R.bestLine.classList.toggle("calm", !!stats.calm);
+    R.tip.hidden = !stats.tip;
+    if (stats.tip) R.tip.textContent = stats.tip;
     R.quip.hidden = !stats.quip;
     if (stats.quip) { R.quipP.textContent = stats.quip; R.quipAva.textContent = (stats.speaker || "Куби")[0]; }
     const ms = stats.missions || [];
@@ -558,11 +810,11 @@ export function createHUD(ctx = {}, opts = {}) {
     R.mlist.textContent = "";
     for (const m of ms) {
       const d = document.createElement("div");
-      d.innerHTML = m.done ? `<svg class="rz-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10.5" fill="#070D36"/><path d="M6.8 12.4 L10.4 16 L17.4 8.6" fill="none" stroke="#C0FF3F" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>` : "•";
+      d.innerHTML = m.done ? `<svg class="rz-check" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10.5" fill="#070D36"/><path d="M6.8 12.4 L10.4 16 L17.4 8.6" fill="none" stroke="#C0FF3F" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/></svg>` : "<i>•</i>";
       d.appendChild(document.createTextNode(m.text));
       R.mlist.appendChild(d);
     }
-    if (stats.nextMission) { const d = document.createElement("div"); d.textContent = `Следующая: ${stats.nextMission}`; d.style.color = "#0536D4"; R.mlist.appendChild(d); }
+    if (stats.nextMission) { const d = document.createElement("div"); d.className = "next"; d.textContent = TXT.next(stats.nextMission); R.mlist.appendChild(d); }
 
     const G = "results";
     const Dd = Math.min(1400, 400 + dist * 0.8);
@@ -574,7 +826,7 @@ export function createHUD(ctx = {}, opts = {}) {
     const bEnd = bonus > 0 ? bT + 520 : bT;
     const totalT = bEnd + 60;
     const fast = rm;
-    const O = (extra) => ({ keep: true, chan: "in", group: G, ...extra });
+    const O = () => ({ keep: true, chan: "in", group: G });
 
     clock.play(R.resShade, [{ opacity: 0 }, { opacity: 1 }], { duration: 250, easing: "linear" }, O());
     clock.play(R.resCard, [{ opacity: 0, transform: fast ? "none" : "translateY(40px)" }, { opacity: 1, transform: "none" }],
@@ -586,14 +838,17 @@ export function createHUD(ctx = {}, opts = {}) {
     rowIn(R.rDist, 200, -16);
     rowIn(R.rEn, 290, -16);
     rowIn(R.bestLine, 380, 0);
+    rowIn(R.tip, 470, 0);
     rowIn(R.quip, 470, 0);
     rowIn(R.mlist, 560, 0);
-    if (bonus > 0) clock.play(R.rBonus, [{ opacity: 0, transform: fast ? "none" : "translateX(40px)" }, { opacity: 1, transform: "none" }],
-      { duration: 250, delay: bT, easing: EASE.outBack }, O());
-    clock.play(R.rTotal, fast
-      ? [{ opacity: 0 }, { opacity: 1 }]
-      : [{ opacity: 0, transform: "scale(1.2)" }, { opacity: 1, transform: "scale(1)" }],
-      { duration: 180, delay: totalT, easing: EASE.outCubic }, O());
+    if (bonus > 0) {
+      clock.play(R.rBonus, [{ opacity: 0, transform: fast ? "none" : "translateX(40px)" }, { opacity: 1, transform: "none" }],
+        { duration: 250, delay: bT, easing: EASE.outBack }, O());
+      clock.play(R.rTotal, fast
+        ? [{ opacity: 0 }, { opacity: 1 }]
+        : [{ opacity: 0, transform: "scale(1.2)" }, { opacity: 1, transform: "scale(1)" }],
+        { duration: 180, delay: totalT, easing: EASE.outCubic }, O());
+    }
     clock.after(totalT, () => emit("ding"), G);
     if (isBest) {
       const sT = totalT + 180 + 200;
@@ -602,6 +857,8 @@ export function createHUD(ctx = {}, opts = {}) {
         : [{ opacity: 0, transform: "scale(2.6) rotate(-12deg)" }, { opacity: 1, transform: "scale(1) rotate(-6deg)" }],
         { duration: 260, delay: sT, easing: EASE.outBack }, O());
       clock.after(sT, () => emit("stamp"), G);
+      // штамп встаёт на место заголовка: заголовок гаснет под ним, чтобы край плашки не торчал
+      clock.play(R.resHeadBox.parentElement, [{ opacity: 1 }, { opacity: 0 }], { duration: 120, delay: sT + 100, easing: "linear" }, { keep: true, chan: "hd", group: G });
       if (!fast) clock.play(R.resCenter, [
         { transform: "translateX(0)" }, { transform: "translateX(-5px)" }, { transform: "translateX(5px)" }, { transform: "translateX(-5px)" },
         { transform: "translateX(5px)" }, { transform: "translateX(-5px)" }, { transform: "translateX(0)" }],
@@ -609,10 +866,12 @@ export function createHUD(ctx = {}, opts = {}) {
       clock.after(sT + 260, () => emit("confetti", { kind: "record" }), G);
     }
     // кнопки и конец блокировки ввода — на 1000 мс
+    R.resBtns.classList.add("off");
     clock.play(R.resBtns, [{ opacity: 0, transform: fast ? "none" : "translateY(16px)" }, { opacity: 1, transform: "none" }],
       { duration: 260, delay: 1000, easing: EASE.outBack }, O());
     clock.after(1000, () => {
       locked = false;
+      R.resBtns.classList.remove("off");
       R.restartBtn.focus({ preventScroll: true });
       if (!rm) clock.play(R.restartBtn, [{ transform: "scale(1)" }, { transform: "scale(1.04)" }, { transform: "scale(1)" }],
         { duration: 1600, iterations: Infinity, easing: "ease-in-out" }, { chan: "br", group: G });
@@ -620,16 +879,23 @@ export function createHUD(ctx = {}, opts = {}) {
     }, G);
     return new Promise(res => { resResolve = res; });
   }
-  // «Ещё раз!» и меню — только после блокировки
-  R.results.addEventListener("pointerdown", ev => { if (locked) ev.preventDefault(); });
 
   // ---------- reduced motion ----------
-  function setReducedMotion(b) {
-    rm = !!b;
+  function applyRm() {
+    const b = wantRm();
+    if (b === rm && root.classList.contains("rz-rm") === rm) return;
+    rm = b;
     root.classList.toggle("rz-rm", rm);
     clock.setReduced(rm);
     if (rm) { enSpring.reset(); distSpring.reset(); }
-    if (tutStep) tutorial(tutStep);
+    if (tutStep) tutorial(tutArg);
+    emit("reducedmotion", rm);
+  }
+  // публично: true/false — выбор игрока (сохраняется), null — «как в системе»
+  function setReducedMotion(b) {
+    forcedRm = null;
+    settings.reducedMotion = b == null ? null : !!b;
+    applySettingsUI(); applyRm(); commitSettings();
   }
   function setEnergonIcon(src) {
     const html = `<img src="${src}" alt="" draggable="false">`;
@@ -637,11 +903,12 @@ export function createHUD(ctx = {}, opts = {}) {
     for (const f of R.flies) f.innerHTML = html;
   }
   function setVolumes(v) {
-    if (v.music != null) R.volM.value = Math.round(v.music * 100);
-    if (v.sfx != null) R.volS.value = Math.round(v.sfx * 100);
-    R.volM.style.setProperty("--v", R.volM.value + "%"); R.volS.style.setProperty("--v", R.volS.value + "%");
+    if (v.music != null) settings.music = clamp(v.music, 0, 1);
+    if (v.sfx != null) settings.sfx = clamp(v.sfx, 0, 1);
+    syncRanges();
   }
-  setVolumes({ music: 0.7, sfx: 0.8 });
+  applySettingsUI();
+  applyRm();
 
   // ---------- кадр ----------
   function update(realDt) {
@@ -649,7 +916,7 @@ export function createHUD(ctx = {}, opts = {}) {
     hudTime += dt;
     clock.tick(dt * 1000);
 
-    if (screen === "play" || screen === "pause") {
+    if (screen === "play" || screen === "pause" || screen === "revive") {
       enSpring.tick(dt); distSpring.tick(dt);
       // докрутка счётчика энергонов
       if (enDisplay < enTarget) {
@@ -686,6 +953,19 @@ export function createHUD(ctx = {}, opts = {}) {
       if (sf !== swFillIdx) { swFillIdx = sf; R.swarmFill.style.transform = SCALE_X[sf]; }
     }
 
+    if (revOn) {
+      revT += dt * 1000;
+      const u = revT >= revDur ? 1 : revT / revDur;
+      const i = Math.round(u * 400);
+      if (i !== revIdx) { revIdx = i; R.revFill.setAttribute("stroke-dashoffset", REV_DASH[i]); }
+      if (!revArmed && revT >= REV_ARM) {
+        revArmed = true; R.revBtns.classList.remove("off");
+        R.revBtn.focus({ preventScroll: true });
+        emit("revive:ready");
+      }
+      if (revT >= revDur) finishRevive("timeout");
+    }
+
     if (resOn && screen === "results") {
       resT += dt * 1000;
       for (let i = 0; i < 3; i++) {
@@ -698,17 +978,19 @@ export function createHUD(ctx = {}, opts = {}) {
           if (resT - tickLast > 55 && u < 1) { tickLast = resT; emit("tick", r.row); }
         }
       }
+      if (resT > 4000) resOn = false;
     }
   }
 
   function dispose() {
-    removeEventListener("keydown", onKey, true);
+    removeEventListener("keydown", onKeyCapture, true);
     if (mq && mq.removeEventListener) mq.removeEventListener("change", onMQ);
     if (ro) ro.disconnect(); else removeEventListener("resize", layout);
     clock.clearEl(root);
     root.remove();
-    handlers.clear();
     if (resResolve) { const r = resResolve; resResolve = null; r("disposed"); }
+    if (revResolve) { const r = revResolve; revResolve = null; r("disposed"); }
+    handlers.clear();
   }
 
   function on(evt, fn) {
@@ -720,9 +1002,32 @@ export function createHUD(ctx = {}, opts = {}) {
   return {
     root, ready,
     show, setDistance, setBest, setStars, setEnergons, flyToCounter, projectToHUD, popLabel,
-    setCombo, setMission, missionComplete, setDanger, countdown, runCountdown, milestone, toast,
-    results, tutorial, on, setReducedMotion, setEnergonIcon, setVolumes, update, dispose,
+    setCombo, setMission, missionComplete, setDanger, countdown, go, runCountdown, banner, milestone, toast, allowFlash,
+    results, revive, tutorial, tutorialPraise, openSettings, closeSettings, on,
+    setReducedMotion, setEnergonIcon, setVolumes, update, dispose,
     get screen() { return screen; }, get locked() { return locked; }, get reducedMotion() { return rm; },
+    get settings() { return settings; }, get settingsOpen() { return settingsOpen; },
     _debug: { clock, R },
   };
 }
+
+/* ===================== КОНТРАКТ =====================
+createHUD(ctx, { container, touch?, reducedMotion?, edges?, keys?, persist?, settings?, milestoneStep? })
+  ctx: { quality, camera?, look? } — больше ничего не читает. Корень .rz-hud вставляется в container.
+  hud.ready — промис: CSS и Nunito (кириллица + латиница) загружены.
+Экраны: show("none"|"title"|"play"|"pause"|"revive"|"results"); openSettings()/closeSettings() — оверлей поверх title/pause.
+Игра: setDistance(m) · setBest(m) · setStars(n) · setEnergons(n, {instant?, streak?, bump?}) · flyToCounter(x, y)
+  · projectToHUD(v3, out) · popLabel(text, "plus"|"big"|"nice"|"warn"|"info", x?, y?, ms?) · setCombo(tier, progress, {mult?})
+  · setMission(tpl|view, progress, {n, stars, total, intro}) · missionComplete({stars, total, next}) → Promise
+  · setDanger(0..1) · countdown(n) → Promise (n ≤ 0 → go()) · go() → Promise · runCountdown(3) → Promise
+  · banner(text, {hold}) · milestone(m) · toast(text, {force, duration}) → bool · allowFlash() → bool
+  · tutorial("lane"|"left"|"right"|"up"|"down"|"tap"| {gesture, text?, skip?} | null) · tutorialPraise(text?)
+  · revive({cost, have, timeout}) → Promise<"revive"|"decline"|"timeout"|"cancel"|"replaced">
+  · results({dist, energons, bonus, isBest, best, streak, quip, speaker, tip, calm, title, missions:[{text,done}], nextMission})
+      → Promise<"restart"|"menu"|"replaced"|"disposed">; ввод заблокирован 1000 мс
+  · setReducedMotion(true|false|null) · setEnergonIcon(dataURL) · setVolumes({music, sfx}) · update(realDt) · dispose()
+События on(evt, fn) → off(): start, pause, resume, menu, restart, tutorial, tutorial:skip, tutorial:shown, tutorial:praise,
+  settings, settings:change(settings), settings:close, volume({music, sfx}), reducedmotion(bool), screen(name),
+  countdown(n), go, milestone(m), combo:tier(n), mission:step(n), mission:complete, confetti({kind, x?, y?}),
+  tick(row), ding, stamp, results:ready, revive:ready, revive:answer(ans), fly:arrive
+*/

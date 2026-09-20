@@ -104,20 +104,26 @@
 .rz-combo .rz-wave { position:absolute; inset:0; border-radius:50%; border:4px solid var(--lime); opacity:0; }
 
 /* ---------- ИГРА: миссия ---------- */
-.rz-mis { position:absolute; left:50%; top:var(--top); width:280px; height:44px; margin-left:-140px; transform-origin:50% 0; }
-.rz-portrait .rz-mis { top:calc(var(--top) + var(--pillH) + 82px); height:40px; }
+/* обёртка центрирует пилюлю любой ширины; сама пилюля свободна для transform-анимаций */
+.rz-mis-wrap { position:absolute; left:0; right:0; top:var(--top); display:flex; justify-content:center; pointer-events:none; }
+.rz-mis { position:relative; height:44px; min-width:280px; max-width:min(460px, calc(100% - 24px)); transform-origin:50% 0; }
+/* портрет: миссия ниже ряда комбо (56 px) и кнопки «Пропустить», зазор ≥ 8 px */
+.rz-portrait .rz-mis-wrap { top:calc(var(--top) + var(--pillH) + 96px); }
+.rz-portrait .rz-mis { height:40px; }
 .rz-portrait .rz-combo { width:56px; height:56px; }
 .rz-portrait .rz-combo-x { font-size:21px; }
 .rz-portrait .rz-pct { font-size:17px; padding:5px 8px 6px; }
 .rz-mis-bg, .rz-mis-lime { position:absolute; inset:0; border-radius:999px; border:3px solid var(--ink); }
 .rz-mis-bg { background:rgba(7,13,54,.85); box-shadow:inset 0 2px 0 rgba(255,255,255,.14), 0 4px 0 rgba(7,13,54,.6); }
 .rz-mis-lime { background:linear-gradient(#E4FF9A,#C0FF3F); box-shadow:inset 0 2px 0 rgba(255,255,255,.6), 0 4px 0 var(--ink); opacity:0; }
-.rz-mis-in { position:absolute; inset:0; display:flex; align-items:center; padding:0 12px 0 7px; gap:6px; }
+.rz-mis-in { position:relative; height:100%; display:flex; align-items:center; padding:0 14px 0 7px; gap:8px; }
 .rz-mis-glyph { width:26px; height:26px; flex:none; border-radius:50%; background:var(--blue); border:2px solid #fff;
   display:grid; place-items:center; font-size:14px; }
-.rz-mis-txt { flex:1; font-size:16px; font-weight:800; white-space:nowrap; overflow:hidden; display:flex; align-items:center; min-width:0; }
-.rz-mis-roll { flex:none; position:relative; display:inline-block; height:1.1em; overflow:hidden; vertical-align:middle; margin:0 .25em; color:var(--lime); font-weight:900; }
-.rz-mis-roll > span { display:block; line-height:1.1em; text-align:center; }
+/* текст целиком (18 px / 800 по HUD-4); многоточие — только крайний случай на узком экране */
+.rz-mis-txt { flex:1 1 auto; min-width:0; font-size:18px; font-weight:800; line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-bottom:3px; }
+.rz-portrait .rz-mis-txt { font-size:16px; }
+.rz-mis-roll { position:relative; display:inline-block; height:1.2em; overflow:hidden; vertical-align:bottom; color:var(--lime); font-weight:900; }
+.rz-mis-roll > span { display:block; line-height:1.2em; text-align:center; }
 .rz-mis-roll > span + span { position:absolute; left:0; right:0; top:0; }
 .rz-stars { display:flex; gap:1px; flex:none; }
 .rz-hud svg.rz-star { width:15px; height:15px; flex:none; fill:rgba(255,255,255,.18); }
@@ -157,6 +163,11 @@
 .rz-fly { position:absolute; left:0; top:0; width:36px; height:36px; margin:-18px 0 0 -18px; opacity:0; will-change:transform; }
 .rz-banner { position:absolute; left:50%; top:calc(var(--top) + 76px); opacity:0; }
 .rz-portrait .rz-banner { top:calc(var(--top) + 200px); }
+/* длинная лента (финал разминки): максимум 2 строки, без переносов по дефису «по-настоящему» */
+.rz-banner.long > div { font-size:26px; white-space:normal; width:max-content; max-width:min(640px, calc(100vw - 56px)); text-align:center; line-height:1.15;
+  padding:8px 22px 10px; hyphens:manual; text-wrap:balance; }
+.rz-banner.long > div > span { white-space:nowrap; }
+.rz-portrait .rz-banner.long > div { font-size:19px; padding:7px 14px 9px; }
 .rz-banner > div { transform:translateX(-50%); position:relative; padding:8px 34px 10px; background:linear-gradient(#E4FF9A,#C0FF3F 55%,#A5E51C);
   color:var(--ink); font-size:34px; border:3px solid var(--ink); border-radius:10px; box-shadow:inset 0 2px 0 rgba(255,255,255,.6), 0 5px 0 var(--ink); white-space:nowrap; }
 .rz-banner > div::before, .rz-banner > div::after { content:""; position:absolute; top:12px; width:26px; height:100%;
@@ -170,26 +181,34 @@
 .rz-toast > div > svg { width:26px; height:26px; }
 
 /* ---------- отсчёт ---------- */
-.rz-cd { position:absolute; left:50%; top:44%; opacity:0; }
-.rz-cd > span { display:block; transform:translate(-50%,-50%); font-size:170px; color:#fff; letter-spacing:-2px;
+/* цифра невидима вне анимации: после окончания WAAPI-кадры снимаются и span возвращается к opacity 0 */
+.rz-cd { position:absolute; left:50%; top:44%; }
+.rz-cd > span { display:block; opacity:0; white-space:nowrap; transform:translate(-50%,-50%); font-size:170px; color:#fff; letter-spacing:-2px;
   -webkit-text-stroke:16px var(--ink); paint-order:stroke fill; text-shadow:0 10px 0 var(--blue), 0 14px 0 var(--ink), 0 22px 30px rgba(7,13,54,.35); }
 .rz-cd.go > span { font-size:96px; color:var(--lime); }
 .rz-portrait .rz-cd > span { font-size:140px; }
 .rz-portrait .rz-cd.go > span { font-size:64px; }
 
-/* ---------- туториал ---------- */
+/* ---------- туториал (GAME-7) ---------- */
 .rz-tut { position:absolute; inset:0; }
-.rz-tut-zone { position:absolute; left:50%; top:66%; width:0; height:0; }
-.rz-tut-trail { position:absolute; left:0; top:0; width:120px; height:14px; margin:-7px 0 0 0; border-radius:14px; transform-origin:0 50%;
-  background:linear-gradient(90deg,rgba(192,255,63,0),rgba(192,255,63,.95)); border:2px solid rgba(7,13,54,.6); opacity:0; }
+.rz-tut-zone { position:absolute; left:50%; top:64%; width:0; height:0; }
+.rz-tut-trail { position:absolute; left:0; top:0; width:90px; height:14px; margin:-7px 0 0 0; border-radius:14px; transform-origin:0 50%;
+  background:linear-gradient(90deg,rgba(192,255,63,0),rgba(192,255,63,.95)); border:2px solid rgba(7,13,54,.45); opacity:0; }
 .rz-tut-hand { position:absolute; left:0; top:0; width:64px; height:72px; margin:-6px 0 0 -30px; opacity:0; filter:drop-shadow(0 6px 0 rgba(7,13,54,.35)); }
 .rz-tut-dot { position:absolute; left:0; top:0; width:44px; height:44px; margin:-22px 0 0 -22px; border-radius:50%; border:4px solid #fff; opacity:0; }
-.rz-tut-card { position:absolute; left:50%; bottom:calc(var(--bottom) + 76px); }
-.rz-tut-card > div { transform:translateX(-50%); display:flex; align-items:center; gap:10px; white-space:nowrap; padding:10px 20px 11px;
-  border-radius:999px; background:rgba(7,13,54,.86); border:3px solid var(--ink); font-size:22px; box-shadow:0 4px 0 var(--ink); }
-.rz-portrait .rz-tut-card > div { font-size:18px; }
-.rz-key { display:inline-grid; place-items:center; min-width:34px; height:34px; padding:0 6px; border-radius:9px; font-size:20px; color:var(--ink);
+/* подпись: ink на белой пилюле r 12 px с лаймовым подчёркиванием, 24 px (портрет 22) */
+.rz-tut-card { position:absolute; left:50%; bottom:calc(var(--bottom) + 84px); }
+.rz-tut-card > div { transform:translateX(-50%); display:flex; align-items:center; gap:8px; white-space:nowrap; padding:9px 18px 12px;
+  border-radius:12px; background:#fff; color:var(--ink); border:3px solid var(--ink); font-size:24px; font-weight:900;
+  box-shadow:inset 0 -5px 0 var(--lime), 0 4px 0 var(--ink), 0 10px 18px rgba(7,13,54,.25); }
+.rz-portrait .rz-tut-card > div { font-size:22px; padding:8px 14px 11px; }
+.rz-tut-keys { display:flex; align-items:center; gap:6px; }
+.rz-tut-keys:empty { display:none; }
+.rz-key { display:inline-grid; place-items:center; min-width:36px; height:36px; padding:0 7px; border-radius:9px; font-size:20px; color:var(--ink);
   background:linear-gradient(#fff,#DCE5FF); border:2.5px solid var(--ink); box-shadow:0 3px 0 var(--ink); }
+.rz-key-alt { font-size:18px; font-weight:800; color:var(--shade); }
+.rz-hud .rz-tut-skip { position:absolute; left:var(--left); top:calc(var(--top) + var(--btn) + 40px); min-height:48px; font-size:17px; padding:0 16px; }
+.rz-portrait .rz-tut-skip { top:calc(var(--top) + var(--btn) + 30px); }
 
 /* ---------- ТИТУЛ ---------- */
 .rz-scrim-t, .rz-scrim-b { position:absolute; left:0; right:0; pointer-events:none; }
@@ -257,6 +276,44 @@
 .rz-range::-moz-range-thumb { width:26px; height:26px; border-radius:50%; background:#0536D4; border:3px solid var(--ink); }
 .rz-range:focus-visible::-webkit-slider-thumb { box-shadow:0 0 0 2px var(--ink), 0 0 0 5px var(--lime); }
 .rz-row-btns { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.rz-btn.wide { width:100%; }
+.rz-portrait .rz-btn.ghost { font-size:17px; padding:0 12px; }
+
+/* неактивные кнопки (блокировка результатов 1 с, revive 0.6 с): тапы уходят в карточку и глушатся */
+.rz-hud .off .rz-btn { pointer-events:none; }
+.rz-hud .rz-rev-btns.off .rz-btn { filter:saturate(.35); opacity:.6; }
+
+/* revive «Спасти Ризи?» (GAME-6) */
+.rz-rev-card { width:min(360px, 100%); display:flex; flex-direction:column; align-items:center; gap:14px; }
+.rz-rev-dial { position:relative; width:132px; height:132px; }
+.rz-rev-ring { position:absolute; inset:0; transform:rotate(-90deg); }
+.rz-rev-heart { position:absolute; left:50%; top:50%; width:64px; height:64px; margin:-32px 0 0 -32px; }
+.rz-rev-btns { width:100%; display:grid; grid-template-columns:1fr auto; gap:10px; }
+.rz-rev-btns .rz-btn.main { min-height:60px; font-size:22px; padding:0 12px; gap:6px; white-space:nowrap; }
+.rz-portrait .rz-rev-btns .rz-btn.main { font-size:19px; }
+.rz-rev-btns .rz-btn.main > svg { width:34px; height:34px; }
+.rz-rev-have { font-size:15px; font-weight:800; color:var(--shade); }
+
+/* настройки (HUD-8): цели ≥ 48 px, зазор ≥ 8 px */
+.rz-set-card { display:flex; flex-direction:column; gap:12px; }
+.rz-set-list { display:flex; flex-direction:column; gap:8px; }
+.rz-set-row { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:52px; padding:2px 6px 2px 14px;
+  border-radius:14px; background:#fff; border:3px solid rgba(7,13,54,.1); }
+.rz-set-row > span { font-size:18px; font-weight:800; color:var(--ink); line-height:1.15; }
+.rz-tgl { pointer-events:auto; cursor:pointer; flex:none; position:relative; width:72px; height:48px; border:0; background:transparent; outline:none; }
+.rz-tgl::before { content:""; position:absolute; left:4px; right:4px; top:9px; height:30px; border-radius:30px; background:#DCE5FF;
+  border:3px solid var(--ink); box-shadow:inset 0 3px 0 rgba(7,13,54,.12); transition:background 120ms; }
+.rz-tgl > i { position:absolute; left:8px; top:13px; width:22px; height:22px; border-radius:50%; background:#fff; border:3px solid var(--ink);
+  box-shadow:0 2px 0 var(--ink); transition:transform 160ms cubic-bezier(.34,1.56,.64,1); }
+.rz-tgl[aria-pressed="true"]::before { background:var(--lime); }
+.rz-tgl[aria-pressed="true"] > i { transform:translateX(26px); background:var(--blue); }
+.rz-seg { pointer-events:auto; display:flex; flex:none; padding:3px; gap:3px; border-radius:14px; background:#DCE5FF; border:3px solid var(--ink); }
+.rz-seg > button { pointer-events:auto; cursor:pointer; font:inherit; font-weight:900; font-size:16px; color:var(--shade); min-width:52px; min-height:40px;
+  padding:0 8px; border:0; border-radius:10px; background:transparent; outline:none; }
+.rz-seg > button[aria-pressed="true"] { background:var(--ink); color:var(--lime); }
+.rz-tgl:focus-visible::before, .rz-seg > button:focus-visible { box-shadow:0 0 0 2px var(--ink), 0 0 0 5px var(--lime); }
+.rz-portrait .rz-set-row > span { font-size:16px; }
+.rz-portrait .rz-seg > button { min-width:46px; font-size:15px; }
 
 /* результаты */
 .rz-res-card { display:flex; flex-direction:column; gap:8px; }
@@ -273,9 +330,16 @@
 .rz-rrow.total .lbl { color:var(--ink); font-size:20px; }
 .rz-rrow.total .val { font-size:36px; }
 .rz-rrow.total .val small { color:var(--ink); }
-.rz-best-line { display:flex; justify-content:space-between; gap:8px; padding:4px 6px 0; font-size:16px; font-weight:800; color:var(--shade); opacity:0; }
+.rz-best-line { display:flex; flex-wrap:wrap; justify-content:space-between; gap:2px 8px; padding:4px 6px 0; font-size:16px; font-weight:800; color:var(--shade); opacity:0; }
+.rz-best-line > span { white-space:nowrap; }
+.rz-portrait .rz-best-line { font-size:15px; }
 .rz-best-line b { color:var(--ink); font-weight:900; display:inline-flex; }
-.rz-best-line .hint { color:var(--blue); }
+.rz-best-line .hint { color:var(--blue); text-align:right; }
+.rz-best-line.calm > span:first-child::after { content:" · спокойный темп"; font-size:13px; color:var(--shade); }
+.rz-tip { padding:8px 12px; border-radius:12px; font-size:15px; font-weight:800; color:var(--ink); line-height:1.25;
+  background:#fff; border:3px solid var(--ink); box-shadow:inset 0 -4px 0 var(--lime); opacity:0; }
+.rz-mlist i { font-style:normal; width:18px; text-align:center; }
+.rz-mlist .next { color:var(--blue); }
 .rz-quip { display:flex; gap:10px; align-items:center; padding:8px 10px; border-radius:14px; background:rgba(5,54,212,.08); opacity:0; }
 .rz-quip .ava { width:36px; height:36px; flex:none; border-radius:50%; background:var(--blue); color:#fff; font-size:18px; display:grid; place-items:center; border:2.5px solid var(--ink); }
 .rz-quip p { font-size:14px; font-weight:700; color:var(--shade); line-height:1.3; }

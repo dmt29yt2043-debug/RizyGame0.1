@@ -10,11 +10,13 @@ export function renderEnergonIcon(renderer, { size = 128, object = null, env = n
   rt.texture.colorSpace = THREE.SRGBColorSpace;
   const scene = new THREE.Scene();
   if (env) scene.environment = env;
+  // кристалл занимает ~80% кадра (иначе на 52 px от него остаётся точка)
   const cam = new THREE.PerspectiveCamera(30, 1, 0.1, 20);
-  cam.position.set(0, 0.35, 4.6); cam.lookAt(0, 0, 0);
-  scene.add(new THREE.HemisphereLight(0xeaf4ff, 0x6a7cc8, env ? 0.6 : 1.6));
-  const key = new THREE.DirectionalLight(0xfff4de, 3.2); key.position.set(-2.5, 3.5, 3); scene.add(key);
-  const rim = new THREE.DirectionalLight(0xbfe0ff, 2.0); rim.position.set(3, 1, -2); scene.add(rim);
+  cam.position.set(0, 0.25, 3.2); cam.lookAt(0, -0.02, 0);
+  // в render target нет тонмаппинга: при сильном свете лайм выгорает в бледный, при слабом — в оливковый
+  scene.add(new THREE.HemisphereLight(0xeaf4ff, 0x4a5cb8, env ? 0.5 : 1.0));
+  const key = new THREE.DirectionalLight(0xfff4de, 2.0); key.position.set(-2.5, 3.5, 3); scene.add(key);
+  const rim = new THREE.DirectionalLight(0xbfe0ff, 1.2); rim.position.set(3, 1, -2); scene.add(rim);
 
   let geo = null, mats = [];
   let gem = object;
@@ -22,13 +24,14 @@ export function renderEnergonIcon(renderer, { size = 128, object = null, env = n
     // шестигранная бипирамида с «площадкой» — как кристалл в SVG-фолбэке
     const pts = [new THREE.Vector2(0, -0.78), new THREE.Vector2(0.62, -0.18), new THREE.Vector2(0.62, 0.2), new THREE.Vector2(0.34, 0.62), new THREE.Vector2(0, 0.66)];
     geo = new THREE.LatheGeometry(pts, 6);
-    const m = new THREE.MeshPhysicalMaterial({ color, roughness: 0.22, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.12,
-      emissive: color, emissiveIntensity: 0.14, flatShading: true });
+    const m = new THREE.MeshPhysicalMaterial({ color, roughness: 0.3, metalness: 0, clearcoat: 1, clearcoatRoughness: 0.1,
+      emissive: color, emissiveIntensity: 0.16, flatShading: true });
     const outline = new THREE.MeshBasicMaterial({ color: 0x070D36, side: THREE.BackSide });
     mats.push(m, outline);
     gem = new THREE.Group();
     const body = new THREE.Mesh(geo, m);
-    const ink = new THREE.Mesh(geo, outline); ink.scale.setScalar(1.09);
+    // обводка чернилами ~3 px на иконке 52 px — как у SVG-кристалла и пилюль
+    const ink = new THREE.Mesh(geo, outline); ink.scale.setScalar(1.17);
     gem.add(ink, body);
     gem.rotation.set(0.18, 0.42, -0.12);
   }
@@ -49,6 +52,15 @@ export function renderEnergonIcon(renderer, { size = 128, object = null, env = n
   renderer.setRenderTarget(prevRT);
   renderer.setClearColor(prevClear, prevAlpha);
   renderer.autoClear = prevAuto;
+
+  // r160 пишет в render target ЛИНЕЙНЫЙ цвет без тонмаппинга (outputColorSpace действует только на экран):
+  // переводим байты в sRGB по таблице, иначе иконка тёмная и грязная
+  const LUT = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) {
+    const c = i / 255;
+    LUT[i] = Math.round(255 * (c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055));
+  }
+  for (let i = 0; i < buf.length; i += 4) { buf[i] = LUT[buf[i]]; buf[i + 1] = LUT[buf[i + 1]]; buf[i + 2] = LUT[buf[i + 2]]; }
 
   // переворот по Y + уменьшение 2× через canvas
   const big = document.createElement("canvas"); big.width = big.height = S;

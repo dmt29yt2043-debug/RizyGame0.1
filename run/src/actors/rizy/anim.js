@@ -34,6 +34,7 @@ export function createAnimator(opts = {}){
   const S = {
     mode: "title", runPhase: 0, speedI: 0, laneX: 0, laneVel: NaN, py: 0, vy: 0, sliding: 0,
     landT: NaN, hitT: NaN, grace: 0, dive: false, celebrate: false, danger: 0,
+    blinkOn: null,                       // если адаптер отдаёт G.blinkOn — мигание неуязвимости ведёт main
   };
   const base = new Float32Array(POSE_LEN), add = new Float32Array(POSE_LEN);
   const Pr = new Float32Array(POSE_LEN), Pa = new Float32Array(POSE_LEN), Ps = new Float32Array(POSE_LEN),
@@ -41,7 +42,7 @@ export function createAnimator(opts = {}){
   const out = {
     base, add, roll: 0, yaw: 0, sx: 1, sy: 1, sz: 1, hopY: 0, visible: true,
     eyeL: 1, eyeR: 1, bunX: 0, bunY: 0, packX: 0, packY: 0, packRx: 0, packRz: 0,
-    rimFlash: 0, windX: 0, windY: 0, windZ: 0, flutter: 0, lift: 0,
+    rimFlash: 0, windX: 0, windY: 0, windZ: 0, flutter: 0, lift: 0, splay: 0,
     wAir: 0, wSlide: 0, wRun: 0, wOver: 0, state: "idle",
   };
   let reduced = !!opts.reducedMotion;
@@ -50,7 +51,7 @@ export function createAnimator(opts = {}){
   const BIG = 99;
   let tS = 0, tR = 0;
   let jumpT = BIG, landT = BIG, landImpact = 0, hitT = BIG, nearT = BIG, nearDir = 1, edgeT = BIG, edgeDir = 1,
-      mileT = BIG, spinT = BIG, flipOn = false, leanT = BIG, leanDir = 0, leanDur = 0.14;
+      mileT = BIG, spinT = BIG, spinWait = 0, flipOn = false, leanT = BIG, leanDir = 0, leanDur = 0.14;
   let wRun = 0, wOver = 0, wAir = 0, wDive = 0, wSlide = 0, slideIn = 0, slideOutT = BIG, slideOutFrom = 0, wasSliding = false;
   let grounded = true, minAirVy = 0, prevLaneX = NaN, lastHitT = NaN, lastLandT = NaN;
   // титул: взгляд по сторонам, взмах рукой, моргание — детерминированный псевдорандом
@@ -76,6 +77,7 @@ export function createAnimator(opts = {}){
     if (s.dive !== undefined) S.dive = !!s.dive;
     if (s.celebrate !== undefined) S.celebrate = !!s.celebrate;
     if (s.danger !== undefined) S.danger = s.danger;
+    if (s.blinkOn !== undefined) S.blinkOn = s.blinkOn;
     // «секунды с события»: уменьшение значения = новое событие
     if (s.hitT !== undefined && s.hitT !== null){
       if (!(s.hitT >= lastHitT) && s.hitT < 0.5) trigger("hit");
@@ -96,7 +98,8 @@ export function createAnimator(opts = {}){
       case "nearmiss": nearT = 0; nearDir = p && p.dir ? Math.sign(p.dir) : 1; rimFlashT = 0; break;
       case "edgebump": edgeT = 0; edgeDir = p && p.dir ? Math.sign(p.dir) : 1; break;
       case "milestone": case "record": mileT = 0; break;
-      case "spin": case "combo": if (!grounded && !reduced) spinT = 0; break;
+      // поворот 360° только в воздухе: запрос живёт 0.35 с (событие jump приходит до отрыва от земли)
+      case "spin": case "combo": if (!reduced){ if (!grounded) spinT = 0; else spinWait = 0.35; } break;
       case "lane": leanT = 0; leanDir = p && p.dir ? Math.sign(p.dir) : 0; leanDur = lerp(0.15, 0.115, S.speedI); break;
       case "dive": S.dive = true; break;
     }
@@ -224,7 +227,8 @@ export function createAnimator(opts = {}){
   function update(realDt, simDt){
     const dR = Math.min(Math.max(realDt, 0), 0.1), dS = Math.min(Math.max(simDt, 0), 0.1);
     tS += dS; tR += dR;
-    const play = S.mode === "play", over = S.mode === "over", title = !play && !over;
+    // "catch" (слоу-мо поимки) показываем как финиш: грустная стойка; "countdown" — как титул
+    const play = S.mode === "play", over = S.mode === "over" || S.mode === "catch", title = !play && !over;
 
     // скорость по X: своя производная, если адаптер не дал laneVel
     let lv = S.laneVel;
@@ -240,6 +244,7 @@ export function createAnimator(opts = {}){
     if (g) minAirVy = 0;
     grounded = g;
     if (g && S.dive) S.dive = false;
+    if (spinWait > 0){ spinWait -= dS; if (!g){ spinT = 0; spinWait = 0; } }
 
     jumpT += dS; landT += dS; hitT += dS; nearT += dS; edgeT += dS; mileT += dS; spinT += dS; leanT += dS; slideOutT += dS;
     lookT += dS; waveT += dS; blinkT += dR; rimFlashT += dR;
@@ -371,7 +376,8 @@ export function createAnimator(opts = {}){
     out.eyeL = out.eyeR = eye;
 
     // мигание неуязвимости (real), в reduced motion не мигаем
-    out.visible = !(play && S.grace > 0 && !reduced && hitT > 0.12 && ((tR * 12) | 0) % 2 === 1);
+    if (S.blinkOn === true || S.blinkOn === false) out.visible = S.blinkOn;
+    else out.visible = !(play && S.grace > 0 && !reduced && hitT > 0.12 && ((tR * 12) | 0) % 2 === 1);
 
     // ---------- ПРУЖИНЫ (real) ----------
     const wx = S.laneX + base[HX], wy = S.py + base[HX + 1] + add[HX + 1] + out.hopY;
@@ -402,12 +408,18 @@ export function createAnimator(opts = {}){
 
     // ветер шарфа: встречный поток от скорости, в подкате хвосты вверх, на титуле лёгкий бриз
     const spd = lerp(12, 30, S.speedI);
+    // Игровая камера смотрит почти горизонтально (≈10° вниз): хвост, летящий строго назад, виден «с торца»,
+    // а вверх — сливается с волосами. Поэтому стилизованный поток: узел за левым плечом, хвосты уходят
+    // назад-влево и чуть вверх (≈ 0.55 : 0.12 : 0.3) — лента выходит за силуэт и читается на фоне трассы.
+    // k растёт со скоростью; splay слегка разводит два хвоста между собой.
     if (play){
-      out.windX = -lv * 0.25; out.windY = 2.0; out.windZ = spd * 0.75;
-      out.flutter = 0.6 + 0.8 * S.speedI; out.lift = 14 * Math.max(0, wSlide) + (wAir > 0.5 && S.vy < 0 ? 5 : 0);
+      const k = 16 * (0.75 + 0.5 * S.speedI);
+      out.windX = -lv * 0.25 - 0.3 * k; out.windY = 9.8 + 0.12 * k; out.windZ = 0.55 * k;
+      out.flutter = 0.8 + 0.8 * S.speedI; out.lift = 14 * Math.max(0, wSlide) + (wAir > 0.5 && S.vy < 0 ? 5 : 0);
+      out.splay = 0.06 * k;
     } else {
       out.windX = 0.8 + 0.6 * Math.sin(tS * 0.7); out.windY = 0.5; out.windZ = 2.2 + 1.2 * Math.sin(tS * 1.3);
-      out.flutter = 0.25; out.lift = 0;
+      out.flutter = 0.25; out.lift = 0; out.splay = 0.6;
     }
     out.wAir = wAir; out.wSlide = wSlide; out.wRun = wRun; out.wOver = wOver;
     return out;
@@ -416,6 +428,8 @@ export function createAnimator(opts = {}){
   return {
     S, out, setState, trigger, update,
     setReducedMotion(b){ reduced = !!b; },
+    // новый забег: пружины и производная laneX без «рывка» от прошлого положения
+    resetSprings(){ bx = bvx = by = bvy = kx = kvx = ky = kvy = 0; pX = pY = NaN; prevLaneX = NaN; },
     get jumpT(){ return jumpT; }, get hitT(){ return hitT; },
   };
 }

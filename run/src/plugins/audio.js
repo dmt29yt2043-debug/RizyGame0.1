@@ -1,48 +1,79 @@
-// БАЗОВЫЙ плагин звука (фолбэк = legacy/run.js): короткие процедурные «бипы» WebAudio на события игры.
+// АДАПТЕР звука: процедурный движок src/audio (шины, лимитер, адаптивная музыка) вместо «бипов».
+import { createAudio } from "../audio/index.js";
 
 export default {
   name: "audio",
   install(ctx){
-    const { bus } = ctx;
-    const G = ctx.G;
-    let AC = null;
-    const timers = [];
+    const { G, bus, qp, cfg } = ctx;
+    // в фоторежиме и в симуляции звук не нужен
+    if ((qp && qp.has && qp.has("shot")) || ctx.simulating) return { update(){}, dispose(){} };
 
-    function beep(f, dur, type="triangle", gain=0.06, slide=0){
-      if (ctx.simulating) return;       // симуляция (sim/фоторежим) — без сотен осцилляторов
-      try {
-        AC = AC || new (window.AudioContext||window.webkitAudioContext)();
-        const o = AC.createOscillator(), g = AC.createGain();
-        o.type = type; o.frequency.value = f;
-        if (slide) o.frequency.linearRampToValueAtTime(f+slide, AC.currentTime+dur);
-        g.gain.value = gain; g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime+dur);
-        o.connect(g); g.connect(AC.destination);
-        o.start(); o.stop(AC.currentTime+dur);
-      } catch(e){}
+    const audio = createAudio({ quality: ctx.quality });
+    const has = n => typeof audio[n] === "function";
+    const call = (n, a, b) => { if (has(n)){ try { return audio[n](a, b); } catch(e){ console.error("[audio] " + n, e); } } };
+    const play = (n, o) => { if (!ctx.simulating) call("play", n, o); };
+    call("prepare");
+
+    let s = {}; try { s = JSON.parse(localStorage.getItem("rizyrun_settings") || "{}") || {}; } catch(e){}
+    if (has("setVolume")){
+      call("setVolume", "music", s.music != null ? s.music : 0.7);
+      const sfx = s.sfx != null ? s.sfx : 0.8;
+      call("setVolume", "sfx", sfx); call("setVolume", "ui", sfx); call("setVolume", "amb", sfx);
     }
+    if (s.muted) call("setMuted", true);
+    if (has("setHaptics")) call("setHaptics", s.vibration !== false && s.vibro !== false);
 
-    const H = {
-      "lane":     () => beep(330,.05,"square",.03),
-      "jump":     () => beep(470,.12,"sine",.05,250),
-      "slide":    () => beep(215,.1,"sine",.04,-80),
-      "start":    () => beep(560,.15,"triangle",.06,290),
-      "land":     () => beep(150,.08,"sine",.04),
-      "hit":      () => beep(120,.25,"sawtooth",.09),
-      "pickup":   () => beep(900+Math.min(600,G.energons*8),.07,"triangle",.05,150),
-      "gameover": () => {
-        beep(300,.3,"sawtooth",.07,-160);
-        timers.push(setTimeout(()=>beep(180,.5,"sawtooth",.06,-90), 220));
-      },
-    };
-    for (const k in H) bus.on(k, H[k]);
+    const onGesture = () => { call("unlock"); };
+    addEventListener("pointerdown", onGesture, { capture:true, passive:true });
+    addEventListener("keydown", onGesture, { capture:true, passive:true });
 
+    bus.on("title", () => call("setMode", "title"));
+    bus.on("start", () => { call("startRun", 0); play("start"); });
+    bus.on("countdown", n => play("count", { n }));
+    bus.on("lane", p => { if (p && p.from === p.to) play("edge", { dir: p.dir }); else play("lane", { dir: p && p.dir }); });
+    bus.on("edgebump", p => play("edge", { dir: p && p.dir }));
+    bus.on("jump", () => play("jump"));
+    bus.on("dive", () => play("dive"));
+    bus.on("land", p => play("land", { impact: p && p.impact }));
+    bus.on("slide", () => play("slide", { dur: G.sliding || (cfg && cfg.slideTime) || 0.6 }));
+    bus.on("pickup", c => play("energon", { lane: c && c.lane }));
+    bus.on("nearmiss", o => {
+      const lanes = (o && o.lanes) || [G.lane];
+      play("nearmiss", { dir: Math.sign(lanes[0] - G.lane) || 1 });
+    });
+    bus.on("hit", () => play("hit"));
+    bus.on("gameover", p => { play("gameover"); if (p && p.isBest) play("record", { delay: 1.4 }); });
+    bus.on("milestone", () => play("milestone"));
+    bus.on("combo:tier", n => play("tier", { tier: n }));
+    bus.on("mission:complete", () => play("mission"));
+    bus.on("mission:progress", () => play("tick", { i: 3 }));
+    bus.on("swarm:far", () => play("relief"));
+    bus.on("tunnel:enter", () => call("setTunnel", true));
+    bus.on("tunnel:exit", () => call("setTunnel", false));
+    bus.on("pause", b => call("setPaused", !!b));
+    bus.on("revive", () => { call("setPaused", false); play("start"); });
+    bus.on("settings", st => {
+      if (!st || !has("setVolume")) return;
+      if (st.music != null) call("setVolume", "music", st.music);
+      if (st.sfx != null){ call("setVolume", "sfx", st.sfx); call("setVolume", "ui", st.sfx); call("setVolume", "amb", st.sfx); }
+      if (st.muted != null) call("setMuted", !!st.muted);
+    });
+
+    function update(realDt){
+      if (ctx.simulating) return;
+      call("setIntensity", G.intensity != null ? G.intensity : 0);
+      call("setDanger", G.danger || 0);
+      call("setDistance", G.dist);
+      call("setSwarmNear", G.swarmNear || 0);
+      if (has("setRunner")) { try { audio.setRunner(G.runPhase || 0, G.py <= 0.02, G.sliding > 0); } catch(e){} }
+      call("update", realDt);
+    }
     return {
-      beep,
-      update(){},
+      update,
       dispose(){
-        for (const k in H) bus.off(k, H[k]);
-        for (const t of timers) clearTimeout(t);
-        try { AC && AC.close(); } catch(e){}
+        removeEventListener("pointerdown", onGesture, { capture:true });
+        removeEventListener("keydown", onGesture, { capture:true });
+        try { audio.dispose(); } catch(e){}
       },
     };
   },

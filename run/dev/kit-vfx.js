@@ -2,6 +2,10 @@
 // эмиттер по ?emit=, симуляция шагом 1/60 до ?t= секунд после эмиссии → один рендер → SHOT_READY.
 // ?emit=footL|footR|run|takeoff|land|dive|slide|lane|edgebump|pickup|magnet|nearmiss|hit|milestone|record|none (через запятую)
 // ?t=  ?I=0..1  ?rm=1  ?q=  ?post=0  ?look=0  ?curve=0  ?cam=game|close|wide  ?snow=0  ?big=1  ?side=  ?hideui=1  ?live=1
+// ?pause=сек — после эмиссии включить setPaused(true) и прокрутить ещё столько же реального времени
+//              (кадр обязан совпасть с кадром без ?pause: кит на паузе не движется)
+// cam=game — РАБОЧИЙ ракурс игры (CAM-1: fov 60+8·I, 0 / 3.8 / 6.4+0.7·I). Все решения о читаемости
+// принимаются только по нему и по портрету 390×844; cam=close оставлен лишь для разбора формы частиц.
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { createVFX, EMITTERS } from "../src/fx/vfx.js";
@@ -44,7 +48,13 @@ const speed = 12 + 18 * I;
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 400);
 if (CAM === "close"){ camera.fov = 50; camera.position.set(0, 2.3, 4.2); camera.lookAt(0, 0.9, -2); }
 else if (CAM === "wide"){ camera.position.set(0, 4.4, 8.4); camera.lookAt(0, 1.0, -10); }
-else { camera.fov = 60 + 8 * I; camera.position.set(0, 3.8, 6.4 + 0.6 * I); camera.lookAt(0, 1.0, -10); }
+else {
+  // CAM-1 как в игре; в портрете (w < h) fov +10 и y 4.2 — ровно как main
+  const portrait = innerWidth < innerHeight;
+  camera.fov = 60 + 8 * I + (portrait ? 10 : 0);
+  camera.position.set(0, portrait ? 4.2 : 3.8, 6.4 + 0.7 * I);
+  camera.lookAt(0, 1.0, -10);
+}
 camera.updateProjectionMatrix();
 
 const G = { mode: "play", x: 0, py: 0, speed, dist: 0, intensity: I };
@@ -152,14 +162,16 @@ if (EMITS.includes("nearmiss")){
 }
 // магнит: энергон на лету к груди
 let flyer = null;
-if (EMITS.includes("magnet")){ flyer = add(crystalG, crystalM, 0.3, 1.1, -1.6, scene, false); flyer.scale.set(0.8, 1.2, 0.8); }
+if (EMITS.includes("magnet")){ flyer = add(crystalG, crystalM, 0.42, 1.15, -1.9, scene, false); flyer.scale.set(0.8, 1.2, 0.8); }
 
 // ---------- VFX ----------
+// конфетти шагает из vfx.update(realDt) (как в игре) — свой rAF киту не нужен ни здесь, ни в плагине
 const vfx = createVFX(ctx);
 scene.add(vfx.root);
 vfx.setIntensity(I);
 vfx.setReducedMotion(RM);
-if (qp.get("snow") === "0") vfx.parts.snow.setCount(0);
+if (qp.get("boost") === "1") vfx.setBoost(true);       // потолок линий скорости (VFX-3)
+if (qp.get("snow") === "0") vfx.setSnowEnabled(false);
 if (ctx.look.curve) ctx.look.curve.patch(scene);
 
 // ---------- ПОСТ ----------
@@ -175,12 +187,14 @@ if (qp.get("post") !== "0"){
 
 // ---------- СЦЕНАРИИ: что эмитить на каждом шаге (lt — время от эмиссии, может быть < 0 для «разгона») ----------
 const DEF_T = { footL: 0.12, footR: 0.12, run: 0.05, takeoff: 0.12, land: 0.12, dive: 0.14, slide: 0.05, lane: 0.1,
-  edgebump: 0.12, pickup: 0.08, magnet: 0.1, nearmiss: 0.12, hit: 0.08, milestone: 0.6, record: 0.75, none: 0 };
+  edgebump: 0.12, pickup: 0.1, magnet: 0.17, nearmiss: 0.12, hit: 0.08, milestone: 0.6, record: 0.75, none: 0 };
 const T = num("t", Math.max(...EMITS.map(e => DEF_T[e] ?? 0.12)));
 const PRE = EMITS.some(e => e === "run" || e === "slide") ? 0.7 : 0;
 const opts = { big: qp.get("big") === "1", side: SIDE, dir: num("dir", 1), impact: num("impact", 1) };
 const chest = { x: 0, y: 1.15, z: -0.1 };
-const magnetTarget = { x: 0, y: 1.35, z: 0.45 };   // как авто-цель кита: грудь, сдвинутая к камере
+// как авто-цель кита: грудь (0, 1.25, 0), сдвинутая на 0.5 м по лучу к камере (toCam)
+const magnetTarget = { x: 0, y: 1.30, z: 0.47 };
+const COIN0 = new THREE.Vector3(0.42, 1.15, -1.9);   // откуда летит энергон в сценарии magnet
 const step = 1 / 60;
 let emitted = 0, runPhase = 0;
 
@@ -199,7 +213,7 @@ function scenario(name, lt, prevLt){
     case "footL": if (crossed) emitted += vfx.emit("footL", { x: -0.14, y: 0, z: 0.05 }); return;
     case "footR": if (crossed) emitted += vfx.emit("footR", { x: 0.14, y: 0, z: 0.05 }); return;
     case "pickup": if (crossed) emitted += vfx.emit("pickup", chest, opts); return;
-    case "magnet": if (crossed) emitted += vfx.emit("magnet", { x: 0.3, y: 1.1, z: -1.6 }, { target: magnetTarget }); return;
+    case "magnet": if (crossed) emitted += vfx.emit("magnet", COIN0, { target: magnetTarget, side: 1 }); return;
     case "hit": if (crossed) emitted += vfx.emit("hit", { x: 0, y: 1.0, z: -0.35 }, opts); return;
     case "nearmiss": if (crossed) emitted += vfx.emit("nearmiss", { x: 0, y: 0, z: 0 }, opts); return;
     case "milestone": case "record": if (crossed) emitted += vfx.emit(name, { x: 0, y: 0, z: 0 }, opts); return;
@@ -218,7 +232,18 @@ for (let s = 0, n = Math.round((total + step) / step); s < n; s++){
   G.dist += speed * step;
   vfx.update(step);
 }
-if (flyer){ const k = Math.min(1, T / 0.09); flyer.position.lerpVectors(new THREE.Vector3(0.3, 1.1, -1.6), new THREE.Vector3(chest.x, chest.y, chest.z), k * k); }
+// ?pause=сек: включаем паузу и крутим ещё столько же реального времени. Кадр обязан совпасть с кадром
+// без ?pause — это и есть доказательство, что setPaused замораживает частицы, снег и тоннель.
+const PAUSE = num("pause", 0);
+if (PAUSE > 0){
+  vfx.setPaused(true);
+  for (let s = 0, n = Math.round(PAUSE / step); s < n; s++) vfx.update(step);
+}
+// энергон летит к груди по той же easeInQuad, что и шлейф в шейдере (k², жизнь шлейфа ≈ 0.42 с)
+if (flyer){
+  const k = Math.min(1, T / 0.42);
+  flyer.position.lerpVectors(COIN0, new THREE.Vector3(chest.x, chest.y, chest.z), k * k);
+}
 
 function render(dt){ if (post) post.render(dt); else renderer.render(scene, camera); }
 
@@ -234,17 +259,79 @@ const TEST = {
     render(0);
     return JSON.stringify({ withFx, noFx, vfxCalls: withFx - noFx, stats: vfx.stats() });
   },
+  // VFX-3: сколько пикселей реально меняет тоннель. Снимаем кадр с мешем линий и без него (пост выключаем —
+  // меряем сам эффект, а не bloom) и считаем долю изменённых пикселей и среднюю разницу. speed/boost задаются
+  // снаружи: TEST.coverage(true) — с boost (потолок), TEST.coverage(false) — обычный максимум скорости.
+  coverage(withBoost){
+    const lines = vfx.parts.lines;
+    G.speed = 30; vfx.setIntensity(1); vfx.setBoost(!!withBoost);
+    vfx.setSnowEnabled(false);
+    for (let i = 0; i < 90; i++) vfx.update(1 / 60);
+    const gl = renderer.getContext(), w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+    const A = new Uint8Array(w * h * 4), B = new Uint8Array(w * h * 4);
+    lines.mesh.visible = true;
+    renderer.render(scene, camera); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, A);
+    lines.mesh.visible = false;
+    renderer.render(scene, camera); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, B);
+    let changed = 0, sum = 0, mx = 0;
+    for (let i = 0; i < w * h; i++){
+      const d = Math.abs(A[i * 4] - B[i * 4]) + Math.abs(A[i * 4 + 1] - B[i * 4 + 1]) + Math.abs(A[i * 4 + 2] - B[i * 4 + 2]);
+      sum += d; if (d > mx) mx = d;
+      if (d > 6) changed++;
+    }
+    vfx.setSnowEnabled(qp.get("snow") !== "0");
+    return JSON.stringify({ lineK: vfx.stats().lines, boost: !!withBoost, w, h,
+      meanDiff: +(sum / (w * h)).toFixed(2), maxDiff: mx, pctPixelsChanged: +(changed / (w * h) * 100).toFixed(2) });
+  },
+  // VFX-пауза: после setPaused(true) кадр НЕ должен меняться сколько бы ни крутили update(realDt).
+  // Первый кадр снимаем уже на паузе (сам переход гасит линии скорости — это и есть задумка), дальше
+  // прокручиваем sec секунд реального времени и сравниваем пиксель в пиксель. pixelsDiffer обязан быть 0.
+  // Отдельно проверяем, что вне паузы кадр как раз МЕНЯЕТСЯ (иначе тест ничего не доказывает).
+  pause(sec){
+    const gl = renderer.getContext(), w = gl.drawingBufferWidth, h = gl.drawingBufferHeight;
+    const A = new Uint8Array(w * h * 4), B = new Uint8Array(w * h * 4);
+    const n = Math.round((sec || 1) / step);
+    vfx.setPaused(true);
+    vfx.update(step);
+    renderer.render(scene, camera); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, A);
+    const s0 = vfx.stats(), t0 = vfx.time;
+    for (let i = 0; i < n; i++) vfx.update(step);
+    renderer.render(scene, camera); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, B);
+    const s1 = vfx.stats(), t1 = vfx.time;
+    let diff = 0;
+    for (let i = 0; i < w * h * 4; i++) if (A[i] !== B[i]) diff++;
+    // контроль: снять паузу и прокрутить столько же — кадр обязан отличаться
+    vfx.setPaused(false);
+    for (let i = 0; i < n; i++){ G.dist += speed * step; vfx.update(step); }
+    renderer.render(scene, camera); gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, B);
+    let diffRun = 0;
+    for (let i = 0; i < w * h * 4; i++) if (A[i] !== B[i]) diffRun++;
+    return JSON.stringify({ pixelsDifferWhilePaused: diff, pixelsDifferWhenRunning: diffRun,
+      vfxTimeHeld: +(t1 - t0).toFixed(5), liveBefore: s0.live, liveAfter: s1.live,
+      linesWhilePaused: s1.lines, confettiBefore: s0.confetti, confettiAfter: s1.confetti, paused: s0.paused });
+  },
   // проверка «без аллокаций»: 600 кадров эмиссии/апдейта, дельта кучи (Chrome)
   alloc(){
     const h0 = performance.memory ? performance.memory.usedJSHeapSize : 0;
-    const p = { x: 0, y: 0, z: 0 }, o = { dt: 1 / 60 };
-    for (let i = 0; i < 600; i++){ vfx.emit("slide", p, o); if (i % 10 === 0) vfx.emit("footL", p); if (i % 60 === 0) vfx.emit("pickup", p); vfx.update(1 / 60); }
+    const p = { x: 0, y: 0, z: 0 }, O = vfx.opts();     // тот же переиспользуемый объект, что и в адаптере
+    for (let i = 0; i < 600; i++){
+      O.reset(); O.dt = 1 / 60; vfx.emit("slide", p, O);
+      if (i % 10 === 0){ O.reset(); vfx.emit("footL", p, O); }
+      if (i % 60 === 0){ O.reset(); O.big = i % 120 === 0; vfx.emit("pickup", p, O); }
+      vfx.update(1 / 60);
+    }
     const h1 = performance.memory ? performance.memory.usedJSHeapSize : 0;
     return JSON.stringify({ heapDeltaKB: Math.round((h1 - h0) / 1024) });
   },
 };
 window.TEST = TEST;
 
+// DOM-конфетти (VFX-4): ?confetti=mission|record&ct=сек — шаги вручную, кадр детерминирован
+if (qp.get("confetti")){
+  vfx.celebrate(qp.get("confetti"));
+  const cf = vfx.confetti;
+  if (cf){ const ct = num("ct", 0.6); for (let tt = 0; tt < ct; tt += step) cf.step(step); }
+}
 render(step);
 const info = document.getElementById("info");
 info.textContent = `vfx: ${EMITS.join("+")}  t=${T}s  I=${I} (speed ${speed.toFixed(0)})  q=${Q}${RM ? "  reduced" : ""}  emitted=${emitted}  post=${post ? "on" : "off"}`;

@@ -1,12 +1,15 @@
 // GLB-адаптер Ризи: GLTFLoader + AnimationMixer, тот же контроллер (anim.js), что у процедурной модели.
 // • Кости ищутся по именам (Blender «thigh.L», Mixamo «LeftUpLeg» и т.п.), нет обязательных — ошибка → процедурная.
 // • Модель нормируется: рост opts.height (2.08 м), ноги на y = 0, лицо в −Z (glTF смотрит в +Z).
-// • Клипы Idle/Run/Jump/Slide/Stumble/Celebrate с кроссфейдом; для состояния без клипа кости крутит
-//   процедурная поза (дельта в осях персонажа: L' = L0 · C⁻¹ · D · C). Аддитивные слои — поверх клипов.
+// • Клипы: один общий клип режется THREE.AnimationUtils.subclip по таблице кадров «rizy_clips»
+//   (extras сцены/узла RizyRig, либо манифест rizy.glb.json), иначе ищутся отдельные клипы по именам.
+//   Idle/Run/Jump/Slide/Stumble/Celebrate с кроссфейдом; для состояния без клипа кости крутит процедурная поза
+//   (дельта в осях персонажа: L' = L0 · C⁻¹ · D · C). Аддитивные слои — поверх клипов.
+// • Примитивы (по одному на материал) сливаются в 3 SkinnedMesh с цветом в вершинах: войлок / волосы+шарф / лицо.
 // • Кости шарфа (scarf.L.1…, scarf.R.1…) ведёт verlet-цепочка; если их нет — лента крепится к груди.
-// • Материалы: Standard → Physical c sheen (войлок), rim на кожу/свитер/волосы/шарф.
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { BONES, NB } from "./anim.js";
 
 const norm = s => s.toLowerCase().replace(/^mixamorig\d*[:_]?/, "").replace(/[^a-z0-9]/g, "");
@@ -26,6 +29,17 @@ const CLIPS = {
   idle: /idle|stand|breath/i, run: /run|sprint|jog/i, air: /jump|air|fall/i, slide: /slide|roll|duck/i,
   stumble: /stumble|hit|trip|hurt/i, celebrate: /celebr|cheer|victory|win|dance/i,
 };
+// имя в таблице rizy_clips → слот контроллера
+const TABLE_SLOT = { idle: "idle", run: "run", jump: "air", slide: "slide", stumble: "stumble", celebrate: "celebrate" };
+
+// таблица клипов: манифест → extras сцены → extras любого узла (строка JSON или объект)
+function clipTable(gltf, manifest){
+  const parse = v => { if (!v) return null; if (typeof v === "string"){ try { return JSON.parse(v); } catch (e){ return null; } } return v; };
+  let t = manifest && parse(manifest.rizy_clips || manifest.clips);
+  if (!t) t = parse(gltf.scene.userData && gltf.scene.userData.rizy_clips);
+  if (!t) gltf.scene.traverse(o => { if (!t && o.userData && o.userData.rizy_clips) t = parse(o.userData.rizy_clips); });
+  return t && typeof t === "object" ? t : null;
+}
 
 export async function loadGlbRig(ctx, opts = {}){
   const url = opts.url || new URL("../../../assets/rizy.glb", import.meta.url).href;
@@ -89,41 +103,116 @@ export async function loadGlbRig(ctx, opts = {}){
   }
   const S0 = bm.map(b => (b ? b.scale.clone() : null));
 
-  // ---------- материалы: войлок + rim ----------
-  const body = [], hair = [], owned = [];
-  const felt = /skin|sweater|jean|cuff|pack|flap|shoe|sock|pocket|body|cloth/i, hairRx = /hair|scarf|tie|bun/i;
-  const upgrade = m => {
-    if (!m || !m.isMeshStandardMaterial) return m;
-    let n = m;
-    const nm = m.name || "";
-    if (!m.isMeshPhysicalMaterial && q !== "low" && (felt.test(nm) || hairRx.test(nm))){
-      n = new THREE.MeshPhysicalMaterial();
-      THREE.MeshStandardMaterial.prototype.copy.call(n, m);
-      n.sheen = 1; n.sheenRoughness = 0.55; n.sheenColor = m.color.clone().lerp(new THREE.Color(1, 1, 1), 0.3);
-      n.name = nm; owned.push(n);
+  // ---------- слияние примитивов: 3 SkinnedMesh с цветом в вершинах ----------
+  const faceRx = /eye|mouth|pupil|brow/i, hairRx = /^(hair|scarf|bun)(?!tie)/i;
+  const buckets = { body: [], hair: [], face: [] };
+  for (const m of skinned){
+    const mat = Array.isArray(m.material) ? m.material[0] : m.material;
+    const nm = (mat && mat.name) || "";
+    const cls = faceRx.test(nm) ? "face" : hairRx.test(nm.replace(/[^a-z]/gi, "")) ? "hair" : "body";
+    buckets[cls].push(m);
+  }
+  const tmpC = new THREE.Color();
+  function prepGeo(m){
+    const src = m.geometry, g = new THREE.BufferGeometry();
+    const n = src.attributes.position.count;
+    g.setAttribute("position", src.attributes.position.clone());
+    if (src.attributes.normal) g.setAttribute("normal", src.attributes.normal.clone());
+    // единые типы костных атрибутов (mergeGeometries требует одинаковых массивов)
+    const si = new Uint16Array(n * 4), sw = new Float32Array(n * 4);
+    const SI = src.attributes.skinIndex, SW = src.attributes.skinWeight;
+    for (let i = 0; i < n; i++) for (let k = 0; k < 4; k++){
+      si[i * 4 + k] = SI ? SI.getComponent(i, k) : 0;
+      sw[i * 4 + k] = SW ? SW.getComponent(i, k) : (k === 0 ? 1 : 0);
     }
-    if (felt.test(nm) && !body.includes(n)) body.push(n);
-    else if (hairRx.test(nm) && !hair.includes(n)) hair.push(n);
-    return n;
+    g.setAttribute("skinIndex", new THREE.Uint16BufferAttribute(si, 4));
+    g.setAttribute("skinWeight", new THREE.Float32BufferAttribute(sw, 4));
+    const mat = Array.isArray(m.material) ? m.material[0] : m.material;
+    tmpC.copy(mat && mat.color ? mat.color : tmpC.setRGB(1, 1, 1));
+    const col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++){ col[i * 3] = tmpC.r; col[i * 3 + 1] = tmpC.g; col[i * 3 + 2] = tmpC.b; }
+    g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+    if (src.index) g.setIndex(new THREE.BufferAttribute(new Uint32Array(src.index.array), 1));
+    else { const ix = new Uint32Array(n); for (let i = 0; i < n; i++) ix[i] = i; g.setIndex(new THREE.BufferAttribute(ix, 1)); }
+    if (!g.attributes.normal) g.computeVertexNormals();
+    return g;
+  }
+  const Mat = (p, sheen) => {
+    if (q === "low") return new THREE.MeshStandardMaterial(p);
+    return new THREE.MeshPhysicalMaterial(Object.assign(p, sheen ? { sheen: 1, sheenRoughness: 0.55, sheenColor: new THREE.Color(0.35, 0.35, 0.37) } : {}));
   };
-  model.traverse(o => {
-    if (!o.isMesh) return;
-    o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false;
-    o.material = Array.isArray(o.material) ? o.material.map(upgrade) : upgrade(o.material);
-  });
+  const mats = {
+    body: Mat({ color: 0xffffff, vertexColors: true, roughness: 0.78, metalness: 0 }, true),
+    hair: Mat({ color: 0xffffff, vertexColors: true, roughness: 0.68, metalness: 0 }, true),
+    face: q === "low" ? new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.2 })
+                      : new THREE.MeshPhysicalMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.06 }),
+  };
+  for (const k in mats) mats[k].name = "rizy:glb:" + k;
+  const merged = {};
+  const oldMats = new Set();
+  let tris = 0;
+  for (const k of ["body", "hair", "face"]){
+    const list = buckets[k];
+    if (!list.length) continue;
+    const ref = list[0];
+    const geo = mergeGeometries(list.map(prepGeo), false);
+    if (!geo) throw new Error("GLB: не удалось слить примитивы " + k);
+    geo.computeBoundingSphere();
+    tris += geo.index.count / 3;
+    const sm = new THREE.SkinnedMesh(geo, mats[k]);
+    sm.name = "rizy:glb:" + k;
+    sm.position.copy(ref.position); sm.quaternion.copy(ref.quaternion); sm.scale.copy(ref.scale);
+    sm.castShadow = k !== "face"; sm.receiveShadow = true; sm.frustumCulled = false;
+    ref.parent.add(sm);
+    sm.bind(ref.skeleton, ref.bindMatrix);
+    merged[k] = sm;
+    for (const m of list){
+      const ms = Array.isArray(m.material) ? m.material : [m.material];
+      for (const x of ms) oldMats.add(x);
+      m.geometry.dispose();
+      m.parent.remove(m);
+    }
+  }
+  for (const x of oldMats){ for (const key in x) if (x[key] && x[key].isTexture) x[key].dispose(); x.dispose(); }
+  model.traverse(o => { if (o.isMesh && !o.isSkinnedMesh){ o.castShadow = true; o.receiveShadow = true; } });
 
   // ---------- клипы ----------
   let mixer = null;
   const actions = {};
+  const clipInfo = {};
+  const hipsName = bm[idx("hips")].name;
   if (gltf.animations && gltf.animations.length){
     mixer = new THREE.AnimationMixer(model);
-    for (const k in CLIPS){
-      const clip = gltf.animations.find(c => CLIPS[k].test(c.name));
-      if (clip){ const a = mixer.clipAction(clip); a.enabled = true; a.setEffectiveWeight(0); a.play(); actions[k] = a; }
+    const table = clipTable(gltf, opts.manifest);
+    if (table){
+      // самый длинный клип — общий «таймлайн» из Blender
+      const src = gltf.animations.reduce((a, c) => (c.duration > a.duration ? c : a), gltf.animations[0]);
+      for (const name in table){
+        const slot = TABLE_SLOT[name.toLowerCase()], e = table[name];
+        if (!slot || !e) continue;
+        const fps = e.fps || 30, loop = e.loop !== false;
+        // subclip исключает конечный кадр: у цикла он равен первому, у одноразового клипа добавляем +1
+        const clip = THREE.AnimationUtils.subclip(src, name, e.frameStart, e.frameEnd + (loop ? 0 : 1), fps);
+        if (slot === "air"){
+          // высоту прыжка задаёт игра (py): подъём таза из клипа удвоил бы прыжок
+          clip.tracks = clip.tracks.filter(t => t.name !== hipsName + ".position");
+        }
+        if (!clip.tracks.length || !(clip.duration > 0)) continue;
+        const a = mixer.clipAction(clip);
+        a.setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+        a.clampWhenFinished = !loop;
+        a.enabled = true; a.setEffectiveWeight(0); a.play();
+        actions[slot] = a; clipInfo[slot] = { name, dur: +clip.duration.toFixed(3), loop };
+      }
+    } else {
+      for (const k in CLIPS){
+        const clip = gltf.animations.find(c => CLIPS[k].test(c.name));
+        if (clip){ const a = mixer.clipAction(clip); a.enabled = true; a.setEffectiveWeight(0); a.play(); actions[k] = a; clipInfo[k] = { name: clip.name, dur: clip.duration }; }
+      }
     }
     if (!Object.keys(actions).length){ mixer.stopAllAction(); mixer = null; }
   }
-  let curAct = null, wClip = 0, lastHit = 99;
+  let curAct = null, wClip = 0, lastHit = 99, slideT = 0;
 
   // ---------- шарф ----------
   const sunU = { value: new THREE.Vector3(11, 17, 7).normalize() };
@@ -162,7 +251,7 @@ export async function loadGlbRig(ctx, opts = {}){
       const o = new THREE.Object3D(); o.name = "rizy:scarfAnchor";
       o.position.copy(new THREE.Vector3(s * 0.04, np.y - 0.05, np.z + 0.17).applyMatrix4(inv));
       chest.add(o);
-      const d = new THREE.Vector3(s * 0.22, -0.55, 0.8).transformDirection(inv);
+      const d = new THREE.Vector3(s * 0.3, -0.25, 1).transformDirection(inv);
       anchors.push({ obj: o, dirObj: chest, dir: [d.x, d.y, d.z] });
     }
   }
@@ -171,7 +260,7 @@ export async function loadGlbRig(ctx, opts = {}){
   const E = new THREE.Euler(), D = new THREE.Quaternion(), T = new THREE.Quaternion(), Tq = new THREE.Quaternion();
   const procQ = []; for (let i = 0; i < NB; i++) procQ.push(new THREE.Quaternion());
   const tv = new THREE.Vector3(), tv2 = new THREE.Vector3(), pw = new THREE.Quaternion(), pwi = new THREE.Quaternion();
-  const hipsI = idx("hips"), packI = idx("pack"), bunLI = idx("bunL"), bunRI = idx("bunR");
+  const hipsI = idx("hips"), packI = idx("pack"), bunLI = idx("bunL"), bunRI = idx("bunR"), eyeLI = idx("eyeL"), eyeRI = idx("eyeR");
 
   function offsetBone(i, x, y, z){
     const b = bm[i]; if (!b) return;
@@ -195,12 +284,16 @@ export async function loadGlbRig(ctx, opts = {}){
     if (mixer){
       wClip += ((act ? 1 : 0) - wClip) * (1 - Math.exp(-12 * simDt));
       if (act && act !== curAct){
-        if (curAct) curAct.crossFadeTo(act.reset().setEffectiveWeight(1), 0.15, false);
-        else act.reset().setEffectiveWeight(1).fadeIn(0.15);
+        act.reset().setEffectiveWeight(1);
+        if (curAct) curAct.crossFadeTo(act, 0.15, false);
+        else act.fadeIn(0.15);
         curAct = act;
+        slideT = 0;
       }
       if (actions.run) actions.run.timeScale = 0.9 + 0.5 * an.S.speedI;
       if (actions.air && state === "air"){ const a = actions.air; a.timeScale = 0; a.time = Math.min(1, an.jumpT / 0.63) * a.getClip().duration; }
+      // подкат: клип растягивается на длительность подката игры (0.48..0.62 с), держится на последнем кадре
+      if (actions.slide && state === "slide"){ slideT += simDt; const a = actions.slide; a.timeScale = 0; a.time = Math.min(1, slideT / 0.55) * a.getClip().duration * 0.999; }
       if (actions.stumble && an.hitT < lastHit){
         actions.stumble.reset().setLoop(THREE.LoopOnce, 1).setEffectiveWeight(1).fadeIn(0.06).play();
         actions.stumble.fadeOut(Math.max(0.1, actions.stumble.getClip().duration - 0.15));
@@ -216,6 +309,8 @@ export async function loadGlbRig(ctx, opts = {}){
         Tq.copy(b.quaternion).multiply(T);
         b.quaternion.copy(procQ[i]).slerp(Tq, wClip);
       }
+      // клип праздника сам поднимает таз — процедурный «хоп» корня не нужен
+      if (want === "celebrate" && actions.celebrate) out.hopY = 0;
     } else {
       for (let i = 0; i < NB; i++) if (bm[i]) bm[i].quaternion.copy(procQ[i]);
     }
@@ -228,9 +323,8 @@ export async function loadGlbRig(ctx, opts = {}){
       T.copy(Ci[packI]).multiply(D).multiply(C[packI]);
       bm[packI].quaternion.multiply(T);
     }
-    for (const [n, v] of [["eyeL", out.eyeL], ["eyeR", out.eyeR]]){
-      const i = idx(n); if (bm[i]) bm[i].scale.set(S0[i].x, S0[i].y * v, S0[i].z);
-    }
+    if (bm[eyeLI]) bm[eyeLI].scale.set(S0[eyeLI].x, S0[eyeLI].y * out.eyeL, S0[eyeLI].z);
+    if (bm[eyeRI]) bm[eyeRI].scale.set(S0[eyeRI].x, S0[eyeRI].y * out.eyeR, S0[eyeRI].z);
   }
 
   // кости шарфа смотрят вдоль verlet-цепочки (с сохранением «крутки» покоя)
@@ -254,19 +348,18 @@ export async function loadGlbRig(ctx, opts = {}){
 
   function dispose(){
     if (mixer) mixer.stopAllAction();
+    for (const k in merged) merged[k].geometry.dispose();
+    for (const k in mats) mats[k].dispose();
     model.traverse(o => {
-      if (o.geometry) o.geometry.dispose();
-      const ms = o.material ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
-      for (const m of ms){ for (const k in m) if (m[k] && m[k].isTexture) m[k].dispose(); m.dispose(); }
+      if (o.isMesh && !merged[o.name.replace("rizy:glb:", "")]){ if (o.geometry) o.geometry.dispose(); }
     });
-    for (const m of owned) m.dispose();
   }
 
   return {
-    kind: "glb", root, yawG, squashG, baseScale, bones: bm, model, gltf, mixer, actions,
-    rimTargets: { body, hair, face: null },
+    kind: "glb", root, yawG, squashG, baseScale, bones: bm, model, gltf, mixer, actions, meshes: merged, mats,
+    rimTargets: { body: [mats.body], hair: [mats.hair], face: mats.face },
     sunU, anchors, colliders, scarfBones, scarfNodes, scarfSeg, applyPose, driveScarf, dispose,
-    info: { height: h, clips: Object.keys(actions), scarfChains: scarfBones ? [lc.length, rc.length] : null,
+    info: { height: h, tris, clips: clipInfo, scarfChains: scarfBones ? [lc.length, rc.length] : null,
             missing: BONES.filter((n, i) => !bm[i]) },
   };
 }

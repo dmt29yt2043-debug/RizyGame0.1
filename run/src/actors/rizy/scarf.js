@@ -21,7 +21,7 @@ export function createScarf(opts){
   const P = [], Q = [], R = [];                 // текущие, прошлые, интерполированные для рендера
   for (let t = 0; t < T; t++){ P.push(new Float32Array(N * 3)); Q.push(new Float32Array(N * 3)); R.push(new Float32Array(N * 3)); }
   const cc = new Float32Array(colliders.length * 4);
-  const wind = { x: 0, y: 0, z: 0, flutter: 0, lift: 0 };
+  const wind = { x: 0, y: 0, z: 0, flutter: 0, lift: 0, splay: 0 };
   let acc = 0, time = 0, inited = false;
 
   // ---------- меш ----------
@@ -31,7 +31,8 @@ export function createScarf(opts){
     const g = new THREE.BufferGeometry();
     posA = new Float32Array(T * perTail * 3); nrmA = new Float32Array(T * perTail * 3);
     const col = new Float32Array(T * perTail * 3), idx = [];
-    const cA = new THREE.Color(opts.color != null ? opts.color : 0xC0FF3F), cB = new THREE.Color(opts.stripe != null ? opts.stripe : 0x2f6df0);
+    // лента под солнцем лежит почти плашмя: чуть темнее бренд-лайма, иначе ACES выбеливает её в бледно-жёлтый
+    const cA = new THREE.Color(opts.color != null ? opts.color : 0xA6E62A), cB = new THREE.Color(opts.stripe != null ? opts.stripe : 0x2f6df0);
     for (let t = 0; t < T; t++){
       const o = t * perTail;
       for (let j = 0; j < rings; j++){
@@ -114,8 +115,10 @@ export function createScarf(opts){
         q[o] = p[o]; q[o + 1] = p[o + 1]; q[o + 2] = p[o + 2];
         // ветер: встречный поток + «флаг»: бегущая волна по длине, хвосты чуть расходятся
         const fl = wind.flutter * u;
-        const ax = wind.x + side * 1.2 * wind.flutter * 0.25 + Math.sin(time * 11.0 - i * 0.9 + t * 1.7) * 3.2 * fl;
-        const ay = -9.8 + wind.y + wind.lift * u + Math.sin(time * 8.3 - i * 1.1 + t) * 2.6 * fl;
+        // splay — хвосты расходятся «ласточкой», чтобы со спины оба читались по бокам рюкзака
+        const ax = wind.x + side * (wind.splay || 0) * u + Math.sin(time * 11.0 - i * 0.9 + t * 1.7) * 3.2 * fl;
+        // хвосты разведены и по высоте: со спины две ленты, а не одна полоса
+        const ay = -9.8 + wind.y + wind.lift * u - side * (wind.splay || 0) * 0.9 * u + Math.sin(time * 8.3 - i * 1.1 + t) * 2.6 * fl;
         const az = wind.z * (0.55 + 0.45 * u) + Math.sin(time * 5.1 - i * 0.7 + t * 2.3) * 1.5 * fl;
         p[o] += vx + ax * dt2; p[o + 1] += vy + ay * dt2; p[o + 2] += vz + az * dt2;
       }

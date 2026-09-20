@@ -1,244 +1,235 @@
-// Стенд постобработки: яркая снежная сцена в масштабе игры (камера, свет, туман как в run.js).
-// ?q=off|low|med|high  ?speed=  ?danger=  ?neutral=1 (грейд/bloom в ноль — для сверки цвета с post off)
-// ?aa=0  ?view=ao (только AO)  ?cam=close  ?t=сек  ?bloom= ?vig= ?warm= ?sat=
+// Стенд постобработки: сцена в масштабе игры со всем look-стеком (materials + curve + post), камера 2.2,
+// свет, небо-купол и туман из LIGHTS (библия 2.1). Проверка LOOK-1/5/6/7.
+// ?q=off|low|med|high  ?speed=0..1 (intensity)  ?danger=0..1  ?flash=мс после удара  ?boost=1  ?over=1  ?tunnel=1
+// ?spike=0..0.3  ?t=сек (фаза пульса)  ?cam=close  ?bend=0  ?aa=0  ?view=ao  ?hideui=1  ?shot=1
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { GTAOPass } from "three/addons/postprocessing/GTAOPass.js";
+import { installCurve } from "../src/look/curve.js";
+import { installNeutralToneMapping } from "../src/look/tonemap.js";
+import { createLook, LIGHTS } from "../src/look/materials.js";
 import { createPost } from "../src/look/post.js";
 
 const qp = new URLSearchParams(location.search);
 const num = (k, d) => (qp.has(k) ? +qp.get(k) : d);
 const Q = qp.get("q") || "med";
-
-// сидированный рандом, чтобы кадры совпадали
 let seed = 7;
 const rnd = (a = 0, b = 1) => { seed = (seed * 16807) % 2147483647; return a + (b - a) * (seed - 1) / 2147483646; };
 
-function canvasTex(w, h, draw, rep) {
-  const c = document.createElement("canvas"); c.width = w; c.height = h;
-  draw(c.getContext("2d"), w, h);
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  if (rep) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rep[0], rep[1]); }
-  t.anisotropy = 8;
-  return t;
-}
-
 // ---------- РЕНДЕР ----------
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance", preserveDrawingBuffer: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(1);
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.18;
+installNeutralToneMapping(renderer, LIGHTS.exposure);   // прямой рендер (q=off) — та же кривая, что в посте
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 document.body.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0xdaeeff, 34, 128);
-scene.background = canvasTex(64, 256, (g, w, h) => {
-  const gr = g.createLinearGradient(0, 0, 0, h);
-  gr.addColorStop(0.00, "#6fc3ff"); gr.addColorStop(0.42, "#a9dcff"); gr.addColorStop(0.72, "#daeeff");
-  gr.addColorStop(0.88, "#ffe9e4"); gr.addColorStop(1.00, "#fff3e0");
-  g.fillStyle = gr; g.fillRect(0, 0, w, h);
-});
+scene.fog = new THREE.Fog(LIGHTS.fog.color, LIGHTS.fog.near, LIGHTS.fog.far);
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 400);
+if (qp.get("cam") === "close") { camera.fov = 45; camera.position.set(2.8, 1.7, 3.6); camera.lookAt(0, 0.9, -1.2); }
+else { camera.position.set(0, 3.8, 6.4); camera.lookAt(0, 1.0, -10); }
+camera.updateProjectionMatrix();
 
-const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 400);
-if (qp.get("cam") === "close") { camera.position.set(2.6, 1.6, 3.2); camera.lookAt(0, 0.7, -1.5); }
-else { camera.position.set(0, 3.05, 5.45); camera.lookAt(0, 1.35, -8); }
+const G = { mode: "play", speed: 12, swarmNear: 0, dist: 0 };
+const ctx = { THREE, renderer, scene, camera, quality: Q === "off" ? "med" : Q, qp, G, cfg: { swarmTime: 5.5 }, look: {} };
+const curve = qp.get("bend") === "0" ? null : installCurve(ctx, {});
+ctx.look.curve = curve;
+const look = await createLook(ctx);
+ctx.look.mats = look;
 
-// ---------- СВЕТ (как в игре) ----------
-scene.add(new THREE.HemisphereLight(0xcfe8ff, 0xfff0dc, 1.05));
-const sun = new THREE.DirectionalLight(0xfff2da, 2.35);
-sun.position.set(11, 17, 7);
-sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-Object.assign(sun.shadow.camera, { left: -14, right: 14, top: 12, bottom: -34, near: 1, far: 62 });
-sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.02;
-sun.target.position.set(0, 0, -12);
+// ---------- НЕБО-КУПОЛ LOOK-8 (+ нарисованный диск солнца: азимут −30°, высота 12°) ----------
+const discDir = new THREE.Vector3(-Math.sin(Math.PI / 6) * Math.cos(0.21), Math.sin(0.21), -Math.cos(Math.PI / 6) * Math.cos(0.21)).normalize();
+const sky = new THREE.Mesh(new THREE.SphereGeometry(300, 32, 16), new THREE.ShaderMaterial({
+  side: THREE.BackSide, depthWrite: false, fog: false,
+  uniforms: { uTop: { value: new THREE.Color(LIGHTS.sky.top) }, uHor: { value: new THREE.Color(LIGHTS.sky.horizon) }, uSun: { value: discDir } },
+  vertexShader: `varying vec3 vDir; void main(){ vDir = normalize(position); vec4 p = projectionMatrix * modelViewMatrix * vec4(position, 1.0); gl_Position = p.xyww; }`,
+  fragmentShader: `varying vec3 vDir; uniform vec3 uTop, uHor, uSun;
+    void main(){
+      vec3 d = normalize(vDir); float y = d.y;
+      vec3 c = y >= 0.0 ? mix(uHor, uTop, pow(clamp(y * 1.6 + 0.08, 0.0, 1.0), 0.6)) : uHor * 0.96;
+      float s = dot(d, uSun);
+      c += smoothstep(0.9990, 0.9996, s) * 8.0 + pow(max(s, 0.0), 64.0) * 0.6;
+      gl_FragColor = vec4(c, 1.0);
+      #include <tonemapping_fragment>
+      #include <colorspace_fragment>
+    }`,
+}));
+sky.renderOrder = -1; sky.frustumCulled = false; sky.userData.noCurve = true;
+scene.add(sky);
+
+// ---------- СВЕТ (LIGHTS) ----------
+const L = LIGHTS;
+scene.add(new THREE.HemisphereLight(L.hemi.sky, L.hemi.ground, L.hemi.intensity));
+const sun = new THREE.DirectionalLight(L.sun.color, L.sun.intensity);
+sun.target.position.fromArray(L.sun.target);
+sun.position.fromArray(L.sun.dir).multiplyScalar(L.sun.distance).add(sun.target.position);
+sun.castShadow = Q !== "low";
+sun.shadow.mapSize.setScalar(Q === "high" ? L.shadow.mapSize.high : L.shadow.mapSize.med);
+Object.assign(sun.shadow.camera, { left: L.shadow.left, right: L.shadow.right, top: L.shadow.top, bottom: L.shadow.bottom, near: L.shadow.near, far: L.shadow.far });
+sun.shadow.bias = L.shadow.bias; sun.shadow.normalBias = L.shadow.normalBias;
 scene.add(sun, sun.target);
-const fill = new THREE.DirectionalLight(0xbfd8ff, 0.5);
-fill.position.set(-9, 7, 4);
+const fill = new THREE.DirectionalLight(L.fill.color, L.fill.intensity);
+fill.position.fromArray(L.fill.dir).multiplyScalar(20);
 scene.add(fill);
 
-// ---------- МАТЕРИАЛЫ ----------
-const felt = (c) => new THREE.MeshPhysicalMaterial({ color: c, roughness: 0.92, sheen: 1, sheenRoughness: 0.6,
-  sheenColor: new THREE.Color(c).lerp(new THREE.Color(0xffffff), 0.5) });
-const snowM = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 });
-const glow = (c, i) => new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: i, roughness: 0.35 });
 function add(geo, m, x, y, z, cast = true, recv = true) {
   const o = new THREE.Mesh(geo, m); o.position.set(x, y, z); o.castShadow = cast; o.receiveShadow = recv;
   scene.add(o); return o;
 }
 
-// ---------- ЗЕМЛЯ ----------
-const snowTex = canvasTex(256, 256, (g, w, h) => {
-  g.fillStyle = "#ffffff"; g.fillRect(0, 0, w, h);
-  for (let i = 0; i < 500; i++) {
-    g.fillStyle = `rgba(186,214,255,${rnd(0.05, 0.18)})`;
-    g.beginPath(); g.arc(rnd(0, w), rnd(0, h), rnd(1, 3.6), 0, 7); g.fill();
-  }
-}, [24, 64]);
-// ?seg=N — разбить огромные плоскости (как для «изогнутого мира»); seg=1 — один квад, проверка NaN-страховки GTAO
-const SEG = Math.max(1, num("seg", 1) | 0);
-const ground = add(new THREE.PlaneGeometry(200, 340, 4, SEG), new THREE.MeshStandardMaterial({ color: 0xffffff, map: snowTex, roughness: 1 }), 0, -0.03, -120, false, true);
+// ---------- ТРАССА (сегменты по 1 м: изгибу есть что гнуть) ----------
+const ground = add(new THREE.PlaneGeometry(160, 220, 16, 220), look.snow({ repeat: [16, 22] }), 0, -0.02, -100, false, true);
 ground.rotation.x = -Math.PI / 2;
-const road = add(new THREE.PlaneGeometry(7.6, 340, 1, SEG), new THREE.MeshStandardMaterial({ color: 0xe8c49a, roughness: 0.85 }), 0, 0, -120, false, true);
-road.rotation.x = -Math.PI / 2;
-// поперечные доски (много тонких краёв — проверка AA)
-const plankG = new THREE.BoxGeometry(7.4, 0.04, 0.08);
-const plankM = new THREE.MeshStandardMaterial({ color: 0xb98a5e, roughness: 0.9 });
-for (let z = 4; z > -90; z -= 1.3) add(plankG, plankM, 0, 0.01, z, false, true);
-
-// снежные намёты
+const deck = add(new THREE.PlaneGeometry(8.2, 220, 1, 220), look.wood({ repeat: [1, 34] }), 0, 0.01, -100, false, true);
+deck.rotation.x = -Math.PI / 2;
+// синие бордюры бренда (#0536D4) и снежные валы
+const curbG = new THREE.BoxGeometry(0.4, 0.34, 220, 1, 1, 220);
+for (const s of [-1, 1]) add(curbG, look.candy(0x0536D4), s * 4.3, 0.17, -100);
 const moundG = new THREE.SphereGeometry(1, 32, 18);
-for (let i = 0; i < 26; i++) {
-  const side = i % 2 ? 1 : -1, z = 3 - i * 4.2 - rnd(0, 2);
-  const m = add(moundG, snowM, side * rnd(5.2, 9), 0, z);
-  m.scale.set(rnd(1.4, 2.6), rnd(0.5, 1.1), rnd(1.3, 2.4));
+const moundM = look.snow({ repeat: 1.2 });
+for (let i = 0; i < 30; i++) {
+  const side = i % 2 ? 1 : -1, z = 4 - i * 3.6 - rnd(0, 1.5);
+  const m = add(moundG, moundM, side * rnd(5.4, 8.5), 0, z);
+  m.scale.set(rnd(1.2, 2.2), rnd(0.45, 0.9), rnd(1.2, 2.0));
 }
-
-// войлочные ёлки со снежными шапками
-const coneG = new THREE.ConeGeometry(1, 1.6, 20);
-const trunkM = felt(0xb9764a);
-for (let i = 0; i < 14; i++) {
-  const side = i % 2 ? -1 : 1, x = side * rnd(8.5, 13), z = -2 - i * 7 - rnd(0, 3), s = rnd(1, 1.6);
-  add(new THREE.CylinderGeometry(0.18 * s, 0.22 * s, 0.8 * s, 10), trunkM, x, 0.4 * s, z);
-  const tm = felt(i % 3 ? 0x7fd89a : 0x5fc48a);
-  for (let k = 0; k < 3; k++) {
-    const c = add(coneG, tm, x, (1.2 + k * 0.85) * s, z);
-    c.scale.setScalar(s * (1.35 - k * 0.3));
-    const cap = add(coneG, snowM, x, (1.55 + k * 0.85) * s, z);
-    cap.scale.set(s * (0.75 - k * 0.2), s * 0.45, s * (0.75 - k * 0.2));
-  }
-}
-
-// пастельные войлочные ящики-препятствия
-const boxG = new RoundedBoxGeometry(1.8, 0.9, 1.1, 4, 0.18);
-[[-2.55, -9, 0xffb3d5], [2.55, -15, 0x7ec3ff], [0, -24, 0xffd2a8], [-2.55, -34, 0x7fd89a], [2.55, -44, 0xfff4e2]]
-  .forEach(([x, z, c]) => add(boxG, felt(c), x, 0.45, z));
-
-// «Ризи»-заглушка на центральной полосе: контактная тень для GTAO
-const body = add(new THREE.CapsuleGeometry(0.42, 0.7, 8, 20), felt(0x5cc0ec), 0, 0.85, 0);
-add(new THREE.SphereGeometry(0.34, 24, 16), felt(0x5cc0ec), 0, 1.72, 0);
-add(new THREE.SphereGeometry(0.3, 24, 16), felt(0xd2f550), 0, 1.86, -0.06);
-const scarf = add(new THREE.TorusGeometry(0.36, 0.1, 12, 32), felt(0xC0FF3F), 0, 1.36, 0);
-scarf.rotation.x = Math.PI / 2;
-add(new RoundedBoxGeometry(0.62, 0.7, 0.3, 3, 0.1), felt(0x2f6ff0), 0, 1.0, 0.42);   // рюкзак
-add(new RoundedBoxGeometry(0.26, 0.16, 0.44, 2, 0.06), felt(0x111111), -0.2, 0.08, 0.05);
-add(new RoundedBoxGeometry(0.26, 0.16, 0.44, 2, 0.06), felt(0x111111), 0.2, 0.08, 0.05);
-
-// забор из тонких столбиков (лесенка без AA)
-const postG = new THREE.CylinderGeometry(0.05, 0.05, 1.3, 8);
-const railG = new THREE.BoxGeometry(0.05, 0.05, 2.2);
-const fenceM = felt(0xfff4e2);
+// войлочные ёлки (декор ≤ 45% насыщенности)
+const coneG = new THREE.ConeGeometry(1, 1.6, 24);
+const trunkM = look.felt(0x9a6a4a), treeA = look.felt(0x6fae8a), treeB = look.felt(0x5f9e86), capM = look.snow({ sparkle: 0 });
 for (let i = 0; i < 16; i++) {
-  for (const s of [-1, 1]) {
-    add(postG, fenceM, s * 4.3, 0.65, 2 - i * 2.2);
-    add(railG, fenceM, s * 4.3, 1.0, 0.9 - i * 2.2);
-    add(railG, fenceM, s * 4.3, 0.55, 0.9 - i * 2.2);
+  const side = i % 2 ? -1 : 1, x = side * rnd(9, 14), z = -2 - i * 6.5 - rnd(0, 3), s = rnd(1.1, 1.7);
+  add(new THREE.CylinderGeometry(0.18 * s, 0.22 * s, 0.8 * s, 10), trunkM, x, 0.4 * s, z);
+  const tm = i % 3 ? treeA : treeB;
+  for (let k = 0; k < 3; k++) {
+    const c = add(coneG, tm, x, (1.2 + k * 0.85) * s, z); c.scale.setScalar(s * (1.35 - k * 0.3));
+    const cap = add(coneG, capM, x, (1.55 + k * 0.85) * s, z); cap.scale.set(s * (0.75 - k * 0.2), s * 0.42, s * (0.75 - k * 0.2));
   }
+}
+// фонари: лампочки 4 (светятся)
+const lampM = look.glow(0xFFD58A, 4), poleM = look.felt(0x3a4a8a);
+for (let i = 0; i < 7; i++) for (const s of [-1, 1]) {
+  const z = -6 - i * 12 - (s > 0 ? 6 : 0);
+  add(new THREE.CylinderGeometry(0.07, 0.09, 3.2, 12), poleM, s * 5.0, 1.6, z);
+  add(new THREE.SphereGeometry(0.24, 20, 14), lampM, s * 5.0, 3.3, z, false, false);
 }
 
-// эмиссивы: энергоны, фонари, лаймовый шар, Гаситель с красным глазом
-const coinG = new THREE.TorusGeometry(0.32, 0.11, 14, 32);
-const coinM = glow(0xff2f92, 2.6);
-for (let i = 0; i < 6; i++) { const c = add(coinG, coinM, 2.55, 1.0, -5 - i * 1.6, true, false); c.rotation.y = 0.5; }
-const lampM = glow(0xffc75e, 3.2);
-for (let i = 0; i < 5; i++) {
-  for (const s of [-1, 1]) {
-    add(new THREE.CylinderGeometry(0.07, 0.09, 3, 10), felt(0x3a4a8a), s * 5.2, 1.5, -3 - i * 11);
-    add(new THREE.SphereGeometry(0.28, 20, 14), lampM, s * 5.2, 3.15, -3 - i * 11, false, false);
-  }
+// ---------- ИГРОВОЕ: препятствия (≥ 75% насыщенности, без лайма), энергоны, Гаситель ----------
+const boxG = new RoundedBoxGeometry(1.9, 0.95, 1.0, 4, 0.16);
+[[-2.55, -12, 0xFF3B5C], [2.55, -20, 0xFF7A1A], [0, -30, 0xFF3B5C], [-2.55, -42, 0x8A3BFF], [2.55, -52, 0xFF3B5C]]
+  .forEach(([x, z, c]) => add(boxG, look.candy(c, { stripe: 0xffffff, stripes: 3, repeat: [2, 1] }), x, 0.48, z));
+// энергоны: оболочка 1.2 (не светится), ядро 3.5
+const shellG = new THREE.OctahedronGeometry(0.34, 0), coreG = new THREE.TorusGeometry(0.2, 0.05, 10, 24);
+const shellM = look.glow(0xC0FF3F, 1.2, { roughness: 0.25 }), coreM = look.glow(0xC0FF3F, 3.5);
+for (let i = 0; i < 7; i++) {
+  const z = -6 - i * 1.7;
+  const sh = add(shellG, shellM, 2.55, 1.0, z, true, false); sh.scale.set(0.8, 1.1, 0.8); sh.rotation.y = 0.6;
+  add(coreG, coreM, 2.55, 1.0, z + 0.02, false, false);
 }
-add(new THREE.SphereGeometry(0.45, 24, 16), glow(0xC0FF3F, 2.4), -2.55, 1.2, -18, false, false);
-const kub = add(new THREE.SphereGeometry(0.7, 28, 20), felt(0x2a2440), -2.55, 1.0, -6.5);
-add(new THREE.SphereGeometry(0.2, 20, 14), glow(0xff3a4e, 4.0), -2.55, 1.05, -5.85, false, false);
+// Гаситель: тёмный войлок с синим sheen, глаз 5
+const kub = add(new THREE.SphereGeometry(0.7, 32, 24), look.felt(0x1B1B2C, { sheenColor: 0x3050ff }), -2.55, 1.3, -7.5);
+add(new THREE.SphereGeometry(0.19, 20, 14), look.glow(0xFF2436, 5), -2.55, 1.36, -6.85, false, false);
 kub.scale.set(1, 0.92, 1);
 
-// солнечное сияние (спрайт, как в игре)
-const glowTex = canvasTex(128, 128, (g, w, h) => {
-  const gr = g.createRadialGradient(w / 2, h / 2, 2, w / 2, h / 2, w / 2);
-  gr.addColorStop(0, "rgba(255,252,236,1)"); gr.addColorStop(0.28, "rgba(255,240,190,.8)"); gr.addColorStop(1, "rgba(255,240,190,0)");
-  g.fillStyle = gr; g.fillRect(0, 0, w, h);
-});
-const sunGlow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, transparent: true, depthWrite: false, fog: false }));
-sunGlow.position.set(30, 33, -140); sunGlow.scale.set(58, 58, 1);
-scene.add(sunGlow);
+// «Ризи»-заглушка: небесно-голубая кожа, лаймовое каре, лаймовый шарф, синий рюкзак, чёрные кеды
+const hero = o => Object.assign({ hero: true }, o);
+add(new THREE.CapsuleGeometry(0.36, 0.62, 8, 24), look.felt(0x111522, hero()), 0, 0.82, 0);        // свитер
+add(new THREE.SphereGeometry(0.33, 32, 20), look.felt(0x5CC0EC, hero()), 0, 1.62, 0);              // голова
+add(new THREE.SphereGeometry(0.35, 32, 20), look.felt(0xC0FF3F, hero()), 0, 1.72, 0.05);            // каре
+const scarf = add(new THREE.TorusGeometry(0.33, 0.1, 14, 40), look.felt(0xC0FF3F, hero()), 0, 1.28, 0);
+scarf.rotation.x = Math.PI / 2;
+add(new RoundedBoxGeometry(0.58, 0.64, 0.28, 3, 0.1), look.felt(0x0536D4, hero()), 0, 0.98, 0.4);  // рюкзак
+for (const s of [-1, 1]) add(new RoundedBoxGeometry(0.24, 0.16, 0.42, 2, 0.06), look.felt(0x15151c, hero()), s * 0.18, 0.08, 0.04);
+
+// снег в воздухе — мягкие точки
+{
+  const N = 1500, pos = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) { pos[i * 3] = rnd(-20, 20); pos[i * 3 + 1] = rnd(0, 12); pos[i * 3 + 2] = rnd(-80, 6); }
+  const g = new THREE.BufferGeometry(); g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  scene.add(new THREE.Points(g, new THREE.PointsMaterial({ map: look.tex.softDot, size: 0.09, transparent: true, depthWrite: false, opacity: 0.9 })));
+}
+if (curve) curve.patch(scene);
 
 // ---------- ПОСТ ----------
-const ctx = { THREE, renderer, scene, camera, quality: Q === "off" ? "med" : Q, qp, look: {} };
 const post = Q === "off" ? null : createPost(ctx);
+ctx.look.post = post;
 if (post) {
-  const p = post.params;
-  p.speedBlur = num("speed", 0);
-  p.danger = num("danger", 0);
-  if (qp.has("bloom")) p.bloom = +qp.get("bloom");
-  if (qp.has("vig")) p.vignette = +qp.get("vig");
-  if (qp.has("warm")) p.warmth = +qp.get("warm");
-  if (qp.has("sat")) p.saturation = +qp.get("sat");
-  if (qp.get("neutral") === "1") Object.assign(p, { bloom: 0, vignette: 0, saturation: 1, warmth: 0, contrast: 1, grain: 0 });
-  // отладка GTAO: ao (после денойза) | ao_raw | normal | depth
+  post.setSignals({
+    intensity: num("speed", 0), danger: num("danger", 0), boost: qp.get("boost") === "1",
+    over: qp.get("over") === "1", tunnel: qp.get("tunnel") === "1",
+  });
   const VIEWS = { ao: "Denoise", ao_raw: "AO", normal: "Normal", depth: "Depth" };
   if (VIEWS[qp.get("view")] && post.passes.gtao) post.passes.gtao.output = GTAOPass.OUTPUT[VIEWS[qp.get("view")]];
 }
 const applyAA = () => { if (post && qp.get("aa") === "0") { post.passes.fxaa.enabled = false; if (post.passes.smaa) post.passes.smaa.enabled = false; } };
-
 addEventListener("resize", () => {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
   if (post) post.setSize(innerWidth, innerHeight); else renderer.setSize(innerWidth, innerHeight);
 });
+function frame(dt) { if (post) post.render(dt); else renderer.render(scene, camera); }
 
-function frame(dt) {
-  if (post) post.render(dt); else renderer.render(scene, camera);
+// ---------- ТЕСТЫ ----------
+const grab = () => {
+  const c = document.createElement("canvas"); c.width = renderer.domElement.width; c.height = renderer.domElement.height;
+  const g = c.getContext("2d"); g.drawImage(renderer.domElement, 0, 0); return { d: g.getImageData(0, 0, c.width, c.height).data, w: c.width, h: c.height };
+};
+function lab(r8, g8, b8) {
+  const f = v => { v /= 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  const r = f(r8), g = f(g8), b = f(b8);
+  const X = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047, Y = 0.2126 * r + 0.7152 * g + 0.0722 * b, Z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883;
+  const t = v => (v > 0.008856 ? Math.cbrt(v) : 7.787 * v + 16 / 116);
+  return [116 * t(Y) - 16, 500 * (t(X) - t(Y)), 200 * (t(Y) - t(Z))];
 }
-
-// ---------- ТЕСТЫ (window.TEST) ----------
-const TEST = {
-  post, renderer, scene, camera,
-  info: () => JSON.stringify({ q: Q, calls: renderer.info.render.calls, passes: post ? post.composer.passes.filter(x => x.enabled).map(x => x.constructor.name + (x.material && x.material.fragmentShader && x.material.fragmentShader.includes("FXAA") ? "(FXAA)" : "") + (x === post.passes.grade ? "(Grade)" : "")) : ["direct"] }),
-  // среднее расхождение (0..255) между post off и нейтральным пост-кадром
-  async diff() {
-    const w = renderer.domElement.width, h = renderer.domElement.height;
-    const grab = () => { const c = document.createElement("canvas"); c.width = w; c.height = h; const g = c.getContext("2d"); g.drawImage(renderer.domElement, 0, 0); return g.getImageData(0, 0, w, h).data; };
-    renderer.render(scene, camera); const A = grab();
-    const pp = post.params, keep = Object.assign({}, pp);
-    Object.assign(pp, { bloom: 0, vignette: 0, saturation: 1, warmth: 0, contrast: 1, grain: 0, speedBlur: 0, danger: 0 });
-    const fx = post.passes.fxaa.enabled, sm = post.passes.smaa && post.passes.smaa.enabled, ao = post.passes.gtao && post.passes.gtao.enabled;
-    post.passes.fxaa.enabled = false; if (post.passes.smaa) post.passes.smaa.enabled = false; if (post.passes.gtao) post.passes.gtao.enabled = false;
-    post.render(0); const B = grab();
-    Object.assign(pp, keep); post.passes.fxaa.enabled = fx; if (post.passes.smaa) post.passes.smaa.enabled = sm; if (post.passes.gtao) post.passes.gtao.enabled = ao;
-    let s = 0, sd = 0, mx = 0;
-    for (let i = 0; i < A.length; i += 4) for (let k = 0; k < 3; k++) { const d = B[i + k] - A[i + k]; s += Math.abs(d); sd += d; mx = Math.max(mx, Math.abs(d)); }
-    const n = A.length / 4 * 3;
-    return JSON.stringify({ meanAbs: +(s / n).toFixed(3), meanSigned: +(sd / n).toFixed(3), maxAbs: mx });
-  },
-  // линейный HDR: максимум канала по «снегу» и по эмиссивам (что пройдёт порог bloom)
+const dE = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+const _p = new THREE.Vector3();
+window.TEST = {
+  post, renderer, scene, camera, look, curve,
+  info: () => JSON.stringify({ q: Q, calls: renderer.info.render.calls, tris: renderer.info.render.triangles, programs: renderer.info.programs.length,
+    passes: post ? post.composer.passes.filter(x => x.enabled).map(x => x.constructor.name + (x === post.passes.grade ? "(Final)" : "") + (x === post.passes.fxaa ? "(FXAA)" : "")) : ["direct"],
+    state: post ? post.state : null, dpr: renderer.getPixelRatio() }),
+  // линейный HDR до поста: max-канал солнечной трассы у Ризи и снега, сколько бесцветных пикселей выше порога
   hdr() {
     const w = 320, h = 180, rt = new THREE.WebGLRenderTarget(w, h, { type: THREE.FloatType });
     renderer.setRenderTarget(rt); renderer.render(scene, camera); renderer.setRenderTarget(null);
     const px = new Float32Array(w * h * 4); renderer.readRenderTargetPixels(rt, 0, 0, w, h, px); rt.dispose();
-    const arr = []; let over = 0, overWhite = 0;
-    for (let i = 0; i < px.length; i += 4) {
-      const r = px[i], g = px[i + 1], b = px[i + 2], mx = Math.max(r, g, b), mn = Math.min(r, g, b);
-      arr.push(mx); if (mx > 1.15) { over++; if ((mx - mn) / mx < 0.1) overWhite++; }
+    const all = [], deckA = [], snowA = []; let over = 0, overWhite = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4, r = px[i], g = px[i + 1], b = px[i + 2], mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+      all.push(mx);
+      if (mx > 1.2) { over++; if ((mx - mn) / mx < 0.15) overWhite++; }
+      const u = x / w, v = y / h;   // v = 0 внизу кадра
+      if (v > 0.08 && v < 0.2 && Math.abs(u - 0.5) > 0.12 && Math.abs(u - 0.5) < 0.22) deckA.push(mx);
+      if (v > 0.05 && v < 0.25 && (u < 0.08 || u > 0.92)) snowA.push(mx);
     }
-    arr.sort((a, b) => a - b);
-    const pc = f => +arr[Math.floor(arr.length * f)].toFixed(3);
-    return JSON.stringify({ p50: pc(0.5), p90: pc(0.9), p99: pc(0.99), p999: pc(0.999), max: +arr[arr.length - 1].toFixed(2), over115: over, over115white: overWhite, total: arr.length });
+    const pc = (a, f) => { a.sort((p, q) => p - q); return a.length ? +a[Math.floor((a.length - 1) * f)].toFixed(3) : null; };
+    return JSON.stringify({ p50: pc(all, 0.5), p99: pc(all, 0.99), deckP90: pc(deckA, 0.9), snowP50: pc(snowA, 0.5), snowP90: pc(snowA, 0.9), over12: over, over12white: overWhite, total: all.length });
+  },
+  // бренд: цвет на экране в освещённых точках шарфа (лайм) и бордюра (синий), ΔE76 к эталону
+  brand() {
+    const { d, w, h } = grab();
+    const at = (x, y, z) => { _p.set(x, y, z); if (curve) curve.bendPoint(_p); _p.project(camera);
+      const px = Math.round((_p.x * 0.5 + 0.5) * w), py = Math.round((0.5 - _p.y * 0.5) * h), i = (py * w + px) * 4; return [d[i], d[i + 1], d[i + 2]]; };
+    const LIME = lab(0xC0, 0xFF, 0x3F), BLUE = lab(0x05, 0x36, 0xD4);
+    const scarfPx = at(-0.3, 1.36, 0.1), curbPx = at(-4.3, 0.34, -3), curbSide = at(4.1, 0.2, -3), shell = at(2.49, 1.12, -5.9);
+    return JSON.stringify({ shell, dEshell: +dE(lab(...shell), LIME).toFixed(1),
+      scarf: scarfPx, dEscarf: +dE(lab(...scarfPx), LIME).toFixed(1), curbTop: curbPx, dEcurbTop: +dE(lab(...curbPx), BLUE).toFixed(1),
+      curbSide, dEcurbSide: +dE(lab(...curbSide), BLUE).toFixed(1) });
   },
 };
-window.TEST = TEST;
 
 (async () => {
   if (post) { await post.ready; applyAA(); }
-  const t = num("t", 0.231);          // пик пульса опасности
-  frame(t);
-  document.getElementById("info").textContent = `q=${Q} speed=${num("speed", 0)} danger=${num("danger", 0)}` + (qp.get("neutral") === "1" ? " neutral" : "") + (qp.get("aa") === "0" ? " aa=0" : "");
-  if (qp.get("hideui") === "1") document.getElementById("info").hidden = true;
+  const t = num("t", 0.0);
+  if (post && qp.has("spike")) post.bloomSpike(num("spike", 0), 400);
+  if (post && qp.has("flash")) { post.hit(); frame(Math.max(0.001, num("flash", 60) / 1000) + t); }
+  else frame(t || 1 / 60);
+  const info = document.getElementById("info");
+  info.textContent = `q=${Q} speed=${num("speed", 0)} danger=${num("danger", 0)}` + (qp.has("flash") ? ` flash+${num("flash", 60)}ms` : "") +
+    (qp.get("boost") === "1" ? " boost" : "") + (qp.get("over") === "1" ? " over" : "") + (qp.get("tunnel") === "1" ? " tunnel" : "") + ` calls=${renderer.info.render.calls}`;
+  if (qp.get("hideui") === "1") info.hidden = true;
   if (qp.has("shot")) { document.title = "SHOT_READY"; return; }
   let last = performance.now();
-  const loop = (now) => { const dt = Math.min(0.05, (now - last) / 1000); last = now; frame(dt); requestAnimationFrame(loop); };
+  const loop = (now) => { const dt = Math.min(0.05, (now - last) / 1000); last = now; G.dist += 20 * dt; if (curve) curve.update(dt, G); frame(dt); requestAnimationFrame(loop); };
   requestAnimationFrame(loop);
 })();

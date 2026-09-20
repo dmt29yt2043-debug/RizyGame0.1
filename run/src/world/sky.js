@@ -4,10 +4,12 @@ import * as THREE from "three";
 import { clamp } from "./util.js";
 
 // ключи сценария: небо top / horizon = туман / солнце (цвет, сила, высота°) / hemi / фонари / прочее
+// Отступление от LOOK-8 («фонари выкл» утром): ядро фонаря днём — «горящее стекло» 1.5–1.6 (чуть выше порога
+// bloom 1.2 по максимальному каналу). С нулём ядро выглядело чёрным кубиком на белом снегу; ореол днём ≈ 0.
 export const PALETTES = [
-  { name: "УТРО",          top: 0x62AEFF, hor: 0xFFF1E4, sun: 0xFFF3DE, sunI: 2.6, sunEl: 38, hemi: 0.30, lamps: 0.0, win: 1.1, sat: 1.10, thr: 0.0, halo: 0.32, rim: 1, mtnK: 1.0 },
-  { name: "ПОЛДЕНЬ-КЭНДИ", top: 0x3F8BFF, hor: 0xEAF6FF, sun: 0xFFFFFF, sunI: 2.9, sunEl: 55, hemi: 0.30, lamps: 0.0, win: 0.9, sat: 1.12, thr: 0.0, halo: 0.32, rim: 1, mtnK: 1.0 },
-  { name: "ЗОЛОТОЙ ЧАС",   top: 0x7C7BFF, hor: 0xFFC7B0, sun: 0xFFB27A, sunI: 2.2, sunEl: 14, hemi: 0.28, lamps: 0.5, win: 1.8, sat: 1.10, thr: 0.0, halo: 0.36, rim: 1.3, mtnK: 0.85 },
+  { name: "УТРО",          top: 0x62AEFF, hor: 0xFFF1E4, sun: 0xFFF3DE, sunI: 2.6, sunEl: 38, hemi: 0.30, lamps: 1.6, win: 1.1, sat: 1.10, thr: 0.0, halo: 0.32, rim: 1, mtnK: 1.0 },
+  { name: "ПОЛДЕНЬ-КЭНДИ", top: 0x3F8BFF, hor: 0xEAF6FF, sun: 0xFFFFFF, sunI: 2.9, sunEl: 55, hemi: 0.30, lamps: 1.5, win: 0.9, sat: 1.12, thr: 0.0, halo: 0.32, rim: 1, mtnK: 1.0 },
+  { name: "ЗОЛОТОЙ ЧАС",   top: 0x7C7BFF, hor: 0xFFC7B0, sun: 0xFFB27A, sunI: 2.2, sunEl: 14, hemi: 0.28, lamps: 2.6, win: 1.8, sat: 1.10, thr: 0.0, halo: 0.36, rim: 1.3, mtnK: 0.85 },
   { name: "СИНИЙ ЧАС",     top: 0x0B1E7A, hor: 0x9DB4FF, sun: 0x9FB8FF, sunI: 0.8, sunEl: 10, hemi: 0.45, lamps: 4.0, win: 4.0, sat: 1.05, thr: -0.4, halo: 0.45, rim: 2, mtnK: 0.55 },
 ];
 
@@ -22,8 +24,11 @@ const SKY_VERT = /* glsl */`
 const SKY_FRAG = /* glsl */`
   uniform vec3 uTop, uHor, uSunCol, uSunDir, uCloudLit, uCloudShade;
   uniform vec3 uM0, uM1, uM2;
-  uniform float uSunK, uTime, uMtnK, uCamX;
+  uniform float uSunK, uTime, uMtnK, uCamX, uAlpha;
+  uniform vec4 uWheel;        // x: азимут (рад), y: угол поворота, z: видимость, w: свет кабинок (синий час)
+  uniform vec3 uWheelCol;
   varying vec3 vDir;
+  float sdSeg(vec2 p, vec2 a, vec2 b){ vec2 pa = p - a, ba = b - a; float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0); return length(pa - ba * h); }
   // гребень: острые пики, мягкие долины (1 − |sin|), в радианах возвышения
   float ridge(float a, float f, float ph, float base, float amp){
     float h = 0.55 * (1.0 - abs(sin(a * f + ph)))
@@ -32,6 +37,28 @@ const SKY_FRAG = /* glsl */`
     return base + amp * h * h;
   }
   float puff(vec2 p, vec2 c, float r){ return smoothstep(r, r * 0.55, length((p - c) * vec2(1.0, 1.9))); }
+  vec3 uMtnCol(int i){ return i == 0 ? uM0 : (i == 1 ? uM1 : uM2); }
+  void mtn(int i, float ax, float y, inout vec3 col){
+      float fi = float(i);
+      float f = 3.1 + fi * 1.9, ph = 1.3 + fi * 2.1;
+      float base = -0.03, amp = 0.12 - fi * 0.028;
+      float px = ax * (1.0 + fi * 0.08);
+      float h = ridge(px, f, ph, base, amp);
+      if (y < h){
+        float e = 0.004;
+        float dh = (ridge(px + e, f, ph, base, amp) - ridge(px - e, f, ph, base, amp)) / (2.0 * e);
+        // склон «лицом» к солнцу (солнце слева: светлее склоны, растущие вправо)
+        float lit = clamp(0.62 + dh * 0.9 * sign(-uSunDir.x + 1e-4) * -1.0, 0.35, 1.0);
+        float mixH = 0.8 - fi * 0.2;
+        vec3 body = mix(uMtnCol(i) * uMtnK * mix(0.78, 1.04, lit), uHor, mixH);
+        float capLine = h - 0.010 - 0.30 * max(0.0, h - (base + amp * 0.35));
+        float cap = smoothstep(capLine - 0.002, capLine + 0.002, y) * step(base + amp * 0.3, h);
+        vec3 snow = mix(vec3(1.0) * uMtnK * mix(0.84, 1.08, lit), uHor, mixH * 0.8);
+        col = mix(body, snow, cap);
+        // дымка к подножию
+        col = mix(col, uHor, 0.55 * smoothstep(base + amp * 0.25, base - 0.02, y));
+      }
+  }
   void main(){
     vec3 d = normalize(vDir);
     float y = d.y;
@@ -57,34 +84,61 @@ const SKY_FRAG = /* glsl */`
       if (c > cl){ cl = c; top = clamp((y - cy) / (s * 1.6) + 0.55, 0.0, 1.0); }
     }
     col = mix(col, mix(uCloudShade, uCloudLit, top), cl * 0.78);
-    // горы: дальний → ближний; цвет подмешан к горизонту 80 / 60 / 40 %
+    // горы: дальний (450 м) → колесо обозрения (400 м) → средний (320 м) → ближний (220 м)
     float ax = az + uCamX;
-    vec3 M[3]; M[0] = uM0; M[1] = uM1; M[2] = uM2;
-    for (int i = 0; i < 3; i++){
-      float fi = float(i);
-      float f = 3.1 + fi * 1.9, ph = 1.3 + fi * 2.1;
-      float base = -0.03, amp = 0.12 - fi * 0.028;
-      float px = ax * (1.0 + fi * 0.08);
-      float h = ridge(px, f, ph, base, amp);
-      if (y < h){
-        float e = 0.004;
-        float dh = (ridge(px + e, f, ph, base, amp) - ridge(px - e, f, ph, base, amp)) / (2.0 * e);
-        // склон «лицом» к солнцу (солнце слева: светлее склоны, растущие вправо)
-        float lit = clamp(0.62 + dh * 0.9 * sign(-uSunDir.x + 1e-4) * -1.0, 0.35, 1.0);
-        float mixH = 0.8 - fi * 0.2;
-        vec3 body = mix(M[i] * uMtnK * mix(0.78, 1.04, lit), uHor, mixH);
-        float capLine = h - 0.010 - 0.30 * max(0.0, h - (base + amp * 0.35));
-        float cap = smoothstep(capLine - 0.002, capLine + 0.002, y) * step(base + amp * 0.3, h);
-        vec3 snow = mix(vec3(1.0) * uMtnK * mix(0.84, 1.08, lit), uHor, mixH * 0.8);
-        col = mix(body, snow, cap);
-        // дымка к подножию
-        col = mix(col, uHor, 0.55 * smoothstep(base + amp * 0.25, base - 0.02, y));
-      }
+    mtn(0, ax, y, col);
+    // колесо обозрения — главный ориентир (WORLD-6): 60 м на 400 м ≈ радиус 0.062 рад, пеленг −18°, 0.05 рад/с
+    if (uWheel.z > 0.001){
+      const float PI2 = 6.2831853;
+      vec2 q = vec2(mod(az - uWheel.x + 3.14159265, PI2) - 3.14159265, y - 0.088);
+      q.x *= 0.996;
+      float R = 0.062, r = length(q);
+      float aa = max(fwidth(q.x), 1e-5) * 0.9;
+      float a = atan(q.y, q.x) + uWheel.y;
+      float sec = PI2 / 12.0;
+      float sa = mod(a, sec) - sec * 0.5;
+      float d = abs(r - R) - 0.0022;
+      d = min(d, abs(r - R * 0.8) - 0.0011);
+      d = min(d, max(abs(sin(sa) * r) - 0.0009, r - R));
+      d = min(d, r - 0.0065);
+      d = min(d, sdSeg(q, vec2(0.0), vec2(-0.036, -0.092)) - 0.0019);
+      d = min(d, sdSeg(q, vec2(0.0), vec2(0.036, -0.092)) - 0.0019);
+      d = min(d, sdSeg(q, vec2(-0.028, -0.07), vec2(0.028, -0.07)) - 0.0012);
+      // кабинки — кружки на концах спиц (в синий час светятся тёплым)
+      float sa2 = mod(a + sec * 0.5, sec) - sec * 0.5;
+      vec2 cq = vec2(r * cos(sa2) - R, r * sin(sa2));
+      float cab = length(cq) - 0.0068;
+      float mW = (1.0 - smoothstep(-aa, aa, d)) * uWheel.z;
+      float mC = (1.0 - smoothstep(-aa, aa, cab)) * uWheel.z;
+      col = mix(col, mix(uWheelCol, uHor, 0.55), mW);
+      vec3 cabC = mix(mix(vec3(1.0, 0.66, 0.76), uHor, 0.45), vec3(1.9, 1.5, 0.9), uWheel.w);
+      col = mix(col, cabC, mC);
     }
-    gl_FragColor = vec4(col, 1.0);
-    #include <tonemapping_fragment>
+    mtn(1, ax, y, col);
+    mtn(2, ax, y, col);
+    // uAlpha 0 = «фон» при рендере в цель поста: OutputPass не тонмаппит такие пиксели (маска неба look/post.js).
+    // На холст — alpha 1 (контекст three всегда с альфой, иначе сквозь небо видно страницу) и toneMapped:false:
+    // и с постом, и без него небо показывает цвета палитры один в один.
+    gl_FragColor = vec4(col, uAlpha);
     #include <colorspace_fragment>
   }`;
+
+const mixN = (x, y, k) => x + (y - x) * k;       // без замыканий в кадре
+
+// ---------- ACES НА CPU (three r160) ----------
+// Небо не тонмаппится (alpha 0 / toneMapped:false) — верх неба показывает цвет палитры как есть. А геометрия
+// в тумане тонмаппится. Чтобы полностью затуманенный объект совпал с горизонтом, небо у горизонта рисуется
+// цветом ACES(horizon) — тем, во что превратится туман. Обратный ACES не годится: пастельный почти белый
+// горизонт лежит у асимптоты кривой, и обратное преобразование взрывается в оранжевый.
+const ACES_IN = new THREE.Matrix3().set(0.59719, 0.35458, 0.04823, 0.07600, 0.90834, 0.01566, 0.02840, 0.13383, 0.83777);
+const ACES_OUT = new THREE.Matrix3().set(1.60475, -0.53108, -0.07367, -0.10208, 1.10813, -0.00605, -0.00327, -0.07276, 1.07602);
+const _v = new THREE.Vector3();
+const fit = v => (v * (v + 0.0245786) - 0.000090537) / (v * (0.983729 * v + 0.4329510) + 0.238081);
+export function forwardACES(src, out, exposure){
+  _v.set(src.r, src.g, src.b).multiplyScalar(exposure / 0.6).applyMatrix3(ACES_IN);
+  _v.set(fit(_v.x), fit(_v.y), fit(_v.z)).applyMatrix3(ACES_OUT);
+  return out.setRGB(clamp(_v.x, 0, 1), clamp(_v.y, 0, 1), clamp(_v.z, 0, 1));
+}
 
 export function createSky(ctx, U){
   const mat = new THREE.ShaderMaterial({
@@ -93,13 +147,18 @@ export function createSky(ctx, U){
       uSunCol: { value: new THREE.Color() }, uSunDir: { value: new THREE.Vector3() }, uSunK: { value: 1 },
       uCloudLit: { value: new THREE.Color(1, 1, 1) }, uCloudShade: { value: new THREE.Color(0xDDE6FF) },
       uM0: { value: new THREE.Color(0xCFE0FF) }, uM1: { value: new THREE.Color(0xB9D2FF) }, uM2: { value: new THREE.Color(0xE8F1FF) },
-      uMtnK: { value: 1 }, uTime: U.uTimeReal, uCamX: { value: 0 },
+      uMtnK: { value: 1 }, uTime: U.uTimeReal, uCamX: { value: 0 }, uAlpha: { value: 1 },
+      uWheel: { value: new THREE.Vector4(-18 * Math.PI / 180, 0, 1, 0) }, uWheelCol: { value: new THREE.Color(0xCFE0FF) },
     },
     vertexShader: SKY_VERT, fragmentShader: SKY_FRAG,
-    side: THREE.BackSide, depthWrite: false, depthTest: false, fog: false,
+    side: THREE.BackSide, depthWrite: false, depthTest: false, fog: false, toneMapped: false,
   });
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(300, 32, 16), mat);
   mesh.frustumCulled = false; mesh.renderOrder = -10; mesh.userData.noCurve = true;
+  mesh.onBeforeRender = r => {
+    const a = r.getRenderTarget() ? 0 : 1, u = mat.uniforms.uAlpha;
+    if (u.value !== a){ u.value = a; mat.uniformsNeedUpdate = true; }
+  };
   mesh.castShadow = mesh.receiveShadow = false;
   mesh.name = "world:sky";
 
@@ -109,20 +168,19 @@ export function createSky(ctx, U){
   const state = {
     index: 0, from: 0, to: 0, t: 1, dur: 25,
     top: new THREE.Color(), horizon: new THREE.Color(), sunColor: new THREE.Color(),
-    sunIntensity: 2.6, sunElevation: 38, hemi: 0.3, lamps: 0, windows: 1.1, saturation: 1.1,
+    sunIntensity: 2.6, sunElevation: 38, hemi: 0.3, lamps: 1.6, windows: 1.1, saturation: 1.1,
     bloomThresholdDelta: 0, haloOpacity: 0.32, rimMul: 1, mtnK: 1,
   };
   const cA = new THREE.Color(), cB = new THREE.Color();
   function blend(k){
     const a = PALETTES[state.from], b = PALETTES[state.to];
-    const L = (x, y) => x + (y - x) * k;
     state.top.copy(cA.setHex(a.top)).lerp(cB.setHex(b.top), k);
     state.horizon.copy(cA.setHex(a.hor)).lerp(cB.setHex(b.hor), k);
     state.sunColor.copy(cA.setHex(a.sun)).lerp(cB.setHex(b.sun), k);
-    state.sunIntensity = L(a.sunI, b.sunI); state.sunElevation = L(a.sunEl, b.sunEl);
-    state.hemi = L(a.hemi, b.hemi); state.lamps = L(a.lamps, b.lamps); state.windows = L(a.win, b.win);
-    state.saturation = L(a.sat, b.sat); state.bloomThresholdDelta = L(a.thr, b.thr);
-    state.haloOpacity = L(a.halo, b.halo); state.rimMul = L(a.rim, b.rim); state.mtnK = L(a.mtnK, b.mtnK);
+    state.sunIntensity = mixN(a.sunI, b.sunI, k); state.sunElevation = mixN(a.sunEl, b.sunEl, k);
+    state.hemi = mixN(a.hemi, b.hemi, k); state.lamps = mixN(a.lamps, b.lamps, k); state.windows = mixN(a.win, b.win, k);
+    state.saturation = mixN(a.sat, b.sat, k); state.bloomThresholdDelta = mixN(a.thr, b.thr, k);
+    state.haloOpacity = mixN(a.halo, b.halo, k); state.rimMul = mixN(a.rim, b.rim, k); state.mtnK = mixN(a.mtnK, b.mtnK, k);
   }
 
   function setKey(i, instant){
@@ -145,6 +203,8 @@ export function createSky(ctx, U){
     u.uTop.value.copy(state.top);
     u.uHor.value.copy(state.horizon);
     fog.color.copy(state.horizon);
+    const rr = ctx.renderer;
+    if (rr && rr.toneMapping === THREE.ACESFilmicToneMapping) forwardACES(state.horizon, u.uHor.value, rr.toneMappingExposure || 1);
     // диск солнца в кадре слева сверху: азимут −30°, высота ~12° (ниже в золотой / синий час)
     const el = clamp(state.sunElevation * 0.28, 5, 16) * Math.PI / 180, az = -30 * Math.PI / 180;
     sunDir.set(Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el));
@@ -155,6 +215,8 @@ export function createSky(ctx, U){
     u.uCloudShade.value.copy(state.horizon).lerp(cA.setHex(0xC9D6F5), 0.5).multiplyScalar(0.55 + 0.45 * state.mtnK);
     u.uCloudLit.value.setRGB(1, 1, 1).lerp(state.sunColor, 0.25).multiplyScalar(0.6 + 0.4 * state.mtnK);
     if (camera) u.uCamX.value = camera.position.x * 0.0006;
+    u.uWheel.value.y = -U.uTimeReal.value * 0.05;
+    u.uWheel.value.w = clamp((state.lamps - 1.6) / 2.4, 0, 1);
   }
 
   setKey(0, true);

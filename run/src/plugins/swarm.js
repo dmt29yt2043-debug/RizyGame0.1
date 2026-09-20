@@ -1,58 +1,38 @@
-// БАЗОВЫЙ плагин роя (фолбэк = legacy/run.js): Гасители-кубиты висят над трассой за спиной Ризи.
-import * as THREE from "three";
+// АДАПТЕР роя: пушистые Гасители из кита src/actors/swarm вместо базовых кубиков.
+import { createSwarm } from "../actors/swarm/swarm.js";
+
+const readSettings = () => { try { return JSON.parse(localStorage.getItem("rizyrun_settings") || "{}") || {}; } catch(e){ return {}; } };
 
 export default {
   name: "swarm",
   install(ctx){
-    const { scene, util } = ctx;
-    const { rnd, lerp } = util;
-    const G = ctx.G;
+    const { G, bus, cfg } = ctx;
+    const st = readSettings();
+    let rm = st.reducedMotion != null ? !!st.reducedMotion : !!G.reducedMotion;
+    try { rm = rm || matchMedia("(prefers-reduced-motion: reduce)").matches; } catch(e){}
+    const sw = createSwarm({ camera: ctx.camera, quality: ctx.quality, look: ctx.look, scene: ctx.scene, reducedMotion: rm },
+                           { trackHalfWidth: 3.9, groundY: 0 });
+    ctx.scene.add(sw.root);
+    if (ctx.look && typeof ctx.look.patch === "function") ctx.look.patch(sw.root);
 
-    const mat = (color, o) => new THREE.MeshStandardMaterial(Object.assign({ color, roughness:.88, metalness:0 }, o||{}));
-    function msh(geo, m, cast=true, recv=false){
-      const x = new THREE.Mesh(geo, m); x.castShadow = cast; x.receiveShadow = recv; return x;
+    const S = { mode:"title", near:false, danger:0, playerX:0, playerY:0, playerZ:0, speedI:0 };
+    const call = (n, a) => { try { if (typeof sw[n] === "function") sw[n](a); } catch(e){ console.error("[swarm] " + n, e); } };
+
+    bus.on("gameover", () => call("catch", { x:G.x, y:G.py, z:0 }));
+    bus.on("start", () => call("release"));
+    bus.on("title", () => call("reset"));
+    bus.on("swarm:far", () => call("far"));
+    bus.on("revive", () => call("revive", { x:G.x, y:G.py, z:0 }));
+    bus.on("settings", () => call("setReducedMotion", !!G.reducedMotion));
+
+    function update(realDt, pctx, simDt){
+      S.mode = G.mode;
+      S.near = G.swarmNear > 0;
+      S.danger = G.danger != null ? G.danger : Math.max(0, Math.min(1, G.swarmNear / ((cfg && cfg.swarmTime) || 5.5)));
+      S.playerX = G.x; S.playerY = G.py; S.playerZ = 0;
+      S.speedI = G.intensity != null ? G.intensity : 0;
+      try { sw.update(realDt, simDt == null ? realDt : simDt, S); } catch(e){ console.error("[swarm] update", e); }
     }
-
-    const swarm = new THREE.Group();
-    const kubits = [];
-    const kubitMat = mat(0x33344f,{roughness:.85});
-    const kubitEye = new THREE.MeshStandardMaterial({ color:0x6b0018, emissive:0xff3a4e, emissiveIntensity:2.4, roughness:.4 });
-    for (let i=0;i<14;i++){
-      const k = new THREE.Group();
-      k.add(msh(new THREE.SphereGeometry(0.17,12,10), kubitMat, false));
-      const e = new THREE.Mesh(new THREE.SphereGeometry(0.085,10,8), kubitEye);
-      e.position.set(0,0,-0.12); k.add(e);
-      for (const s of [-1,1]){
-        const w = msh(new THREE.SphereGeometry(0.07,8,6), kubitMat, false);
-        w.position.set(0.18*s, 0.09, 0); w.scale.set(1.5,.28,.85);
-        k.add(w);
-      }
-      // рой держится ВЫШЕ головы и по краям — не перекрывает трассу
-      k.userData = { ox:rnd(-3.4,3.4), oy:rnd(2.9,5.2), oz:rnd(-.8,.8), ph:rnd(0,7), sp:rnd(2,4) };
-      swarm.add(k); kubits.push(k);
-    }
-    scene.add(swarm);
-
-    return {
-      swarm,
-      update(dt){
-        const perf = ctx.time.t;
-        const nearK = G.swarmNear > 0 ? 1 : 0;
-        const baseZ = G.mode==="play" ? lerp(9.5, 4.6, nearK) : 7.0;
-        swarm.position.z = lerp(swarm.position.z, baseZ, Math.min(1,dt*2.2));
-        swarm.position.y = 0.4;
-        for (let i=0;i<kubits.length;i++){
-          const k = kubits[i], u = k.userData;
-          k.position.set(
-            u.ox + Math.sin(perf*u.sp+u.ph)*0.5,
-            u.oy + Math.sin(perf*u.sp*1.3+u.ph)*0.35,
-            u.oz + Math.cos(perf*u.sp*0.7+u.ph)*0.5
-          );
-          k.rotation.y = Math.sin(perf*u.sp+u.ph)*0.6;
-          k.rotation.z = Math.cos(perf*u.sp*1.1+u.ph)*0.25;
-        }
-      },
-      dispose(){ scene.remove(swarm); },
-    };
+    return { update, dispose(){ try { sw.dispose(); } catch(e){} } };
   },
 };

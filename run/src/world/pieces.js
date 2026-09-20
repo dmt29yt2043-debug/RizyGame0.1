@@ -38,15 +38,15 @@ function buildGate(mats){
     c.add(cyl(0.52, 0.56, H, 24, 8), pink, M(s * R, H / 2, cz), { stripe: { period: 0.7, len: H, turns: 1 } });
     c.add(rbox(1.8, 1.1, 1.8, 0.14, 3), 0xC9925F, M(s * R, 0.55, cz), { ao: AO });
     c.add(rbox(1.9, 0.16, 1.9, 0.07), 0xffffff, M(s * R, 1.12, cz));
-    for (let i = 0; i < 8; i++) c.add(sph(0.09, 8, 6), [0xF5D0DC, 0xD6ECF7, 0xFFF4C8][i % 3], M(s * R + Math.cos(i * 0.785) * 0.93, 0.6, cz + Math.sin(i * 0.785) * 0.93));
+    for (let i = 0; i < 8; i++) c.add(sph(0.09, 6, 4), [0xF5D0DC, 0xD6ECF7, 0xFFF4C8][i % 3], M(s * R + Math.cos(i * 0.785) * 0.93, 0.6, cz + Math.sin(i * 0.785) * 0.93));
     f.add(hemi(1.4, 14, 5), 0xffffff, M(s * R, -0.1, cz, 0, 0, 0, 1.5, 0.45, 1.4));
-    for (let i = 0; i < 6; i++) gl.add(sph(0.1, 8, 6), 0xffffff, M(s * R, 1.5 + i * 0.36, cz + 0.58));
+    for (let i = 0; i < 6; i++) gl.add(sph(0.1, 6, 4), 0xffffff, M(s * R, 1.5 + i * 0.36, cz + 0.58));
   }
   c.add(swapUV(new THREE.TorusGeometry(R, 0.52, 16, 64, PI)), pink, M(0, H, cz), { stripe: { period: 0.7, len: PI * R, turns: 1 } });
   f.add(new THREE.TorusGeometry(R, 0.42, 10, 36, PI * 0.56), 0xffffff, M(0, H + 0.24, cz, 0, 0, PI * 0.22, 1, 1, 1.05));
   for (let i = 0; i < 36; i++){
     const a = PI * (i + 0.5) / 36;
-    gl.add(sph(0.12, 8, 6), 0xffffff, M(Math.cos(a) * R, H + Math.sin(a) * R, cz + 0.56));
+    gl.add(sph(0.12, 6, 4), 0xffffff, M(Math.cos(a) * R, H + Math.sin(a) * R, cz + 0.56));
   }
   // вывеска: синяя доска + цепочки + текст на отдельном материале
   f.add(rbox(6.9, 1.9, 0.22, 0.2, 3), 0x0536D4, M(0, 7.0, cz + 0.05));
@@ -67,8 +67,8 @@ function buildBridge(mats){
   const c = new GeoBuilder(), f = new GeoBuilder(), ic = new GeoBuilder(), gl = new GeoBuilder();
   for (const s of [-1, 1]){
     for (let z = 0; z >= -L; z -= 2){
-      c.add(rbox(0.16, 1.2, 0.16, 0.04), wood, M(s * 5.3, 0.6, z));
-      f.add(hemi(0.13, 8, 3), 0xffffff, M(s * 5.3, 1.2, z, 0, 0, 0, 1, 0.6, 1));
+      c.add(new THREE.BoxGeometry(0.16, 1.2, 0.16), wood, M(s * 5.3, 0.6, z));          // 12 треугольников на столбик
+      f.add(hemi(0.13, 6, 2), 0xffffff, M(s * 5.3, 1.2, z, 0, 0, 0, 1, 0.6, 1));
     }
     c.add(new THREE.BoxGeometry(0.14, 0.12, L, 1, 1, L), wood, M(s * 5.3, 1.12, -L / 2));
     c.add(new THREE.BoxGeometry(0.1, 0.1, L, 1, 1, L), wood, M(s * 5.3, 0.62, -L / 2));
@@ -88,11 +88,11 @@ function buildBridge(mats){
     c.add(rbox(12.6, 0.56, 0.72, 0.12, 2), wood, M(0, 5.1, zp));
     c.add(prism(1.9, 1.0, 13.2), 0xE58FA0, M(0, 5.36, zp, 0, PI / 2, 0));
     f.add(prism(1.75, 0.95, 13.4), 0xffffff, M(0, 5.5, zp, 0, PI / 2, 0));
-    for (let i = 0; i < 9; i++) gl.add(sph(0.1, 8, 6), 0xffffff, M(-5 + i * 1.25, 4.75 - Math.sin(i / 8 * PI) * 0.25, zp + 0.4));
+    for (let i = 0; i < 9; i++) gl.add(sph(0.1, 6, 4), 0xffffff, M(-5 + i * 1.25, 4.75 - Math.sin(i / 8 * PI) * 0.25, zp + 0.4));
   }
   for (const zm of [-20, -40]){
     c.add(swapUV(new THREE.TorusGeometry(5.3, 0.16, 8, 40, PI)), wood, M(0, 1.2, zm));
-    for (let i = 1; i < 12; i++){ const a = PI * i / 12; gl.add(sph(0.085, 8, 6), 0xffffff, M(Math.cos(a) * 5.3, 1.2 + Math.sin(a) * 5.3 - 0.2, zm + 0.1)); }
+    for (let i = 1; i < 12; i++){ const a = PI * i / 12; gl.add(sph(0.085, 6, 4), 0xffffff, M(Math.cos(a) * 5.3, 1.2 + Math.sin(a) * 5.3 - 0.2, zm + 0.1)); }
     f.add(new THREE.TorusGeometry(5.3, 0.13, 6, 20, PI * 0.5), 0xffffff, M(0, 1.33, zm, 0, 0, PI * 0.25));
   }
   // льдины и снежные островки на реке
@@ -113,8 +113,9 @@ function buildTunnel(mats){
   const outer = [], inner = [];
   for (let i = 0; i <= NA; i++){ const a = i / NA * PI; outer.push([Math.cos(a) * rxo, Math.sin(a) * ryo]); }
   for (let i = NA; i >= 0; i--){ const a = i / NA * PI; inner.push([Math.cos(a) * rxi, Math.sin(a) * ryi]); }
-  f.add(sweep(outer, 0.4, -L - 0.4, 1), 0xF2F6FF, null, { keepUV: true });
-  f.add(sweep(inner, 0.4, -L - 0.4, 1), 0x4A5FB4, null, { keepUV: true, ao: [0, 2.2, 0.55] });
+  // без keepUV: uv.v заметания — метры (> 0.5), шейдер кита принял бы их за флаг «карамельных полос»
+  f.add(sweep(outer, 0.4, -L - 0.4, 2), 0xF2F6FF, null);
+  f.add(sweep(inner, 0.4, -L - 0.4, 2), 0x4A5FB4, null, { ao: [0, 2.2, 0.55] });
   const ring = new THREE.Shape();
   outer.forEach((p, i) => i ? ring.lineTo(p[0], p[1]) : ring.moveTo(p[0], p[1]));
   inner.forEach(p => ring.lineTo(p[0], p[1]));
@@ -134,7 +135,7 @@ function buildTunnel(mats){
     const pts = [];
     for (let i = 0; i <= 12; i++){ const a = i / 12 * PI; pts.push([Math.cos(a) * (rxi - 0.06), Math.sin(a) * (ryi - 0.06), 0]); }
     ic.add(tube(pts, 36, 0.15, 6), 0xBFE6FF, M(0, 0, z));
-    for (let i = 2; i <= 10; i += 2){ const a = i / 12 * PI; gl.add(sph(0.09, 8, 6), 0xffffff, M(Math.cos(a) * (rxi - 0.25), Math.sin(a) * (ryi - 0.25), z + 0.18)); }
+    for (let i = 2; i <= 10; i += 2){ const a = i / 12 * PI; gl.add(sph(0.09, 6, 4), 0xffffff, M(Math.cos(a) * (rxi - 0.25), Math.sin(a) * (ryi - 0.25), z + 0.18)); }
   }
   // тёплые световые полосы по своду
   for (const s of [-1, 1]){
@@ -164,7 +165,7 @@ function buildVillage(mats){
   }
   for (let i = 0; i < 80; i++){
     const t = i / 80, ang = t * PI * 9, y = 2.9 + t * 20, rad = 6.5 - 5.5 * t;
-    gl.add(sph(0.13, 8, 6), 0xffffff, M(tx + Math.cos(ang) * rad, y, tz + Math.sin(ang) * rad));
+    gl.add(sph(0.13, 6, 4), 0xffffff, M(tx + Math.cos(ang) * rad, y, tz + Math.sin(ang) * rad));
   }
   gl.add(starShape(1.5, 0.62), 0xffffff, M(tx, 25.4, tz + 0.08));
   gl.add(starShape(1.5, 0.62), 0xffffff, M(tx, 25.4, tz - 0.08, 0, PI, 0));
@@ -187,7 +188,7 @@ function buildVillage(mats){
     }
     for (let i = 0; i <= 24; i++){
       const x = -6.2 + i * 12.4 / 24, y = 6.3 - 1.0 * (1 - (x / 6.2) ** 2);
-      gl.add(sph(0.1, 8, 6), 0xffffff, M(x, y, z));
+      gl.add(sph(0.1, 6, 4), 0xffffff, M(x, y, z));
     }
   }
   for (const G of [HA.body, HA.win, HB.body, HB.win, sm, cane]) G.dispose();
@@ -226,16 +227,24 @@ export function createPieces(mats, o){
     p.payload.type = type; p.payload.s0 = s0; p.payload.s1 = s0 + p.len;
     plan.push(p); return p;
   }
+  // ориентир не ближе 60 м к воротам-рубежу (WORLD-3/7); при шаге рубежей < 200 м правило выключено (не влезет)
+  const MS = o.milestoneStep || 0;
   function ensure(){
     while (plan.length < 3){
       const prev = plan.length ? plan[plan.length - 1] : null;
-      const s0 = prev ? prev.s0 + Math.max(prev.len + 150, 250 + rng() * 150) : nextStart;
-      add(pickType(), s0);
+      let s0 = prev ? prev.s0 + Math.max(prev.len + 150, 250 + rng() * 150) : nextStart;
+      const t = pickType(), len = built[t].len;
+      if (MS >= 200) for (let k = 0; k < 3; k++){
+        const m = Math.ceil((s0 - 60) / MS) * MS;
+        if (m >= MS && m < s0 + len + 60) s0 = m + 60; else break;
+      }
+      add(t, s0);
     }
   }
   function drop(i){
     const p = plan[i]; built[p.type].group.visible = false;
-    plan.splice(i, 1); pool.push(p);
+    for (let k = i; k < plan.length - 1; k++) plan[k] = plan[k + 1];   // без splice: он создаёт массив
+    plan.length--; pool.push(p);
   }
   function reset(dist){
     while (plan.length) drop(plan.length - 1);
@@ -304,10 +313,15 @@ export function createPieces(mats, o){
     for (let i = 0; i < plan.length; i++){ const p = plan[i]; if (p.type === "tunnel" && s > p.s0 - 10 && s < p.s0 + p.len) return false; }
     return true;
   }
+  // линия энергонов через центр арки: на ±15 м от арки выгодная полоса — средняя (1), иначе −1
+  function coinLane(s){
+    for (let i = 0; i < plan.length; i++){ const p = plan[i]; if (p.type === "gate" && Math.abs(s - p.s0) < 15) return 1; }
+    return -1;
+  }
   function nearPiece(s, margin){
     for (let i = 0; i < plan.length; i++){ const p = plan[i]; if (s > p.s0 - margin && s < p.s0 + p.len + margin) return true; }
     return false;
   }
   function dispose(){ group.traverse(n => { if (n.isMesh) n.geometry.dispose(); }); }
-  return { group, plan, built, state, update, reset, force, blocked, wallFree, nearPiece, dispose };
+  return { group, plan, built, state, update, reset, force, blocked, wallFree, coinLane, nearPiece, dispose };
 }

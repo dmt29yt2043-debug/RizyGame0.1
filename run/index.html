@@ -6,10 +6,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
-  html,body { height:100%; background:#cfe9ff; overflow:hidden;
+  html,body { height:100%; background:#cfe9ff; overflow:hidden; touch-action:none; overscroll-behavior:none;
               font-family:"Avenir Next","Nunito",system-ui,-apple-system,sans-serif; }
   #wrap { position:relative; width:100vw; height:100vh; }
-  canvas { display:block; width:100%; height:100%; }
+  canvas { display:block; width:100%; height:100%; touch-action:none; }
   .ui { position:absolute; user-select:none; z-index:5; color:#0b1240; }
 
   /* фирменные «стикеры» RIZYLAND */
@@ -60,6 +60,22 @@
   .keys { color:#6a79c0; font-size:13px; line-height:1.9; font-weight:700; }
   .stat { font-size:22px; color:#0b1240; font-weight:900; }
   .best { color:#0536D4; }
+  /* белая шторка: кроссфейд вместо пролёта камеры при reduced motion */
+  #fade { position:absolute; inset:0; background:#f2f6ff; opacity:0; pointer-events:none; z-index:20; }
+  /* пауза и отсчёт 3-2-1 (main.js ставит body.paused; HUD-плагин может заменить своим) */
+  #pauseUi { top:0; left:0; right:0; bottom:0; display:none; flex-direction:column; align-items:center; justify-content:center; gap:14px;
+             background:rgba(7,13,54,.28); z-index:15; }
+  body.paused #pauseUi { display:flex; }
+  #pauseUi .pill { padding:10px 26px 12px; font-size:20px; font-weight:900; }
+  #cd { font-size:84px; font-weight:900; color:#fff; text-shadow:0 5px 0 #0536D4, 0 10px 24px rgba(7,13,54,.35); min-height:1em; }
+  /* подсказки первого забега */
+  #tut { left:50%; bottom:18%; transform:translateX(-50%); display:none; z-index:12; pointer-events:none; }
+  body.tut #tut.show { display:block; }
+  #tutText { display:inline-block; background:#fff; color:#070D36; font-size:24px; font-weight:900; padding:8px 20px 10px;
+             border-radius:12px; box-shadow:inset 0 -4px 0 #C0FF3F, 0 6px 18px rgba(7,13,54,.25); white-space:nowrap; }
+  #tutSkip { top:18px; left:50%; transform:translateX(-50%); display:none; font:inherit; font-size:14px; font-weight:800;
+             color:#070D36; background:#fff; border:3px solid #070D36; border-radius:999px; padding:4px 14px; z-index:12; cursor:pointer; }
+  body.tut #tutSkip { display:block; }
   #over { display:none; }
   /* фоторежим ?hideui=1: чистый кадр без DOM-оверлеев */
   .hideui .ui, .hideui .panel { display:none !important; }
@@ -106,6 +122,11 @@
     </div>
   </div>
 
+  <div id="fade"></div>
+  <div class="ui" id="pauseUi"><div class="pill">ПАУЗА — нажми, чтобы продолжить</div><div id="cd"></div></div>
+  <div class="ui" id="tut"><span id="tutText"></span></div>
+  <button class="ui" id="tutSkip" data-ui>Пропустить обучение</button>
+
   <div id="crash"><div class="box">
     <h2>Игра не запустилась</h2>
     <p id="crashHint">Покажи мне текст ниже — по нему сразу видно причину.</p>
@@ -141,6 +162,6 @@
 <script type="importmap">
 { "imports": { "three": "./three.module.js", "three/addons/": "./addons/" } }
 </script>
-<script type="module" src="src/main.js?v=30"></script>
+<script type="module" src="src/main.js?v=31"></script>
 </body>
 </html>

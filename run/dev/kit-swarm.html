@@ -16,8 +16,12 @@
 </head>
 <body>
 <div id="info"></div>
-<!-- ?danger=0|0.5|1  ?catch=1&ct=0.25  ?from=1&sw=3 (сначала danger=from sw сек)  ?at=сек  ?cam=game|old|title|side
-     ?q=low|med|high  ?post=0  ?dv=0.5 (виньетка опасности)  ?count=N  ?rm=1  ?ts=0.3 (слоу-мо)  ?hide=1  ?hideui=1  ?shot=1 -->
+<!-- ?danger=0|0.5|1 (near = danger > 0, либо явно ?near=0|1)  ?catch=1&ct=0.25  ?from=1&sw=3 (сначала danger=from sw сек)  ?at=сек
+     ?hit=T (как в игре: удар в T, near 5.5 с, danger линейно 1→0, затем far; ?swarmTime=)  ?revive=T&rt=0.6 (ударная волна в T)
+     ?cam=game|old|title|side|close  ?q=low|med|high  ?post=0  ?dv=0.5 (виньетка опасности)  ?count=N  ?rm=1  ?ts=0.3 (слоу-мо)
+     ?hide=1  ?hideui=1  ?shot=1 (без живого цикла). SHOT_READY ставится при ЛЮБОМ запуске после предпрогона до кадра.
+     TEST.info() · TEST.coverage() · TEST.hotRed() · TEST.timeline() · TEST.perf() -->
+
 <script type="module" src="./kit-swarm.js"></script>
 </body>
 </html>

@@ -16,8 +16,10 @@
 </head>
 <body>
 <div id="stage"><img id="bg" alt=""><div id="notch"></div></div>
-<!-- ?screen=title|play|pause|results|none  ?t=мс (заморозка)  ?combo=3:0.5  ?danger=0..1  ?fx=1  ?mission=intro|step|done
-     ?record=1  ?tut=left|right|up|down|tap  ?cd=3|2|1|0  ?milestone=250  ?toast=1  ?rm=1  ?q=low|med|high  ?notch=1  ?icon=rt  ?stress=1 -->
+<!-- По умолчанию t=1600 и SHOT_READY; ?live=1 — реальное время.
+     ?screen=title|play|pause|results|revive|settings|none  ?t=мс  ?combo=3:0.5  ?danger=0..1  ?fx=1  ?mission=on|intro|step|done|off
+     ?record=1  ?tut=lane|left|right|up|down|tap  ?praise=1  ?cd=3|2|1|0  ?go=1  ?milestone=250  ?banner=…  ?toast=1  ?rm=1
+     ?q=low|med|high  ?notch=1  ?touch=0|1  ?icon=rt  ?stress=1  ?selftest=1 (→ window.DEV.selftest) -->
 <script type="module" src="./kit-hud.js"></script>
 </body>
 </html>

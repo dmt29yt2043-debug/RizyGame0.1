@@ -52,8 +52,13 @@ void main(){
 	mv.xy += d * ( c.y * len ) + vec2( -d.y, d.x ) * ( c.x * size );
 	// растянутая снежинка той же «массы» — прозрачнее
 	vAlpha = uAlpha * fade * mix( 1.0, clamp( sqrt( size / len ) * 1.35, 0.35, 1.0 ), uStretch );
-	vAlpha *= smoothstep( uNearFade * 0.4, uNearFade, -mv.z );
+	// у камеры: растянутая снежинка гаснет раньше (иначе 0.6-метровый штрих в метре от объектива = брус на пол-экрана)
+	float nf = mix( uNearFade, uNearFade * 3.6, uStretch );
+	vAlpha *= smoothstep( nf * 0.4, nf, -mv.z );
 	gl_Position = projectionMatrix * mv;
+	// на скорости центр кадра чище: героиня и полосы читаются, «гиперпрыжок» только по краям
+	vec2 ndc = gl_Position.xy / max( gl_Position.w, 1e-4 );
+	vAlpha *= mix( 1.0, 0.3 + 0.7 * smoothstep( 0.12, 0.62, length( ndc * vec2( 1.0, 0.85 ) ) ), uStretch );
 #ifdef USE_FOG
 	vFogDepth = -mv.z;
 #endif
@@ -74,7 +79,11 @@ void main(){
 	// ядро чуть холоднее кромки не нужно: чистый снег, лёгкий голубой край даёт читаемость на белом
 	vec3 col = mix( vec3( 0.80, 0.87, 1.0 ), uColor, smoothstep( 1.0, 0.45, r ) );
 #ifdef USE_FOG
+	#ifdef FOG_EXP2
+	float ff = 1.0 - exp( -fogDensity * fogDensity * vFogDepth * vFogDepth );
+	#else
 	float ff = smoothstep( fogNear, fogFar, vFogDepth );
+	#endif
 	col = mix( col, fogColor, ff );
 	a *= 1.0 - ff * 0.6;
 #endif

@@ -1,15 +1,18 @@
-// Стенд кита героини: сетка поз или один кадр с постобработкой.
+// Стенд кита героини: сетка поз, сравнение моделей бок о бок или один кадр с постобработкой.
 // ?kind=procedural|glb|auto  ?glb=../src/actors/rizy/testdata/rizy_wip.glb (свой файл)
+// ?kinds=procedural,glb      — одна поза (?pose=…) для каждой модели в соседних колонках
 // ?pose=grid|idle|front|run|game|jump|land|slide|stumble|celebrate|over|lean|dive|nearmiss|danger
-// ?view=face|front|game|back34|side  ?q=low|med|high  ?post=0  ?look=0  ?speedI=0.5  ?t=сек  ?anim=1 (живой цикл)
+// ?view=face|front|game|game0|back34|side|close  ?q=low|med|high  ?post=0  ?look=0  ?speedI=0.5  ?t=сек  ?anim=1 (живой цикл)
+//   game  — камера из bible (fov 60, y 3.8, z 6.4, look (0, 1.0, −10)); game0 — нынешняя камера main.js
 import * as THREE from "three";
 import { createRizy } from "../src/actors/rizy/index.js";
 
 const qp = new URLSearchParams(location.search);
 const Q = ["low", "med", "high"].includes(qp.get("q")) ? qp.get("q") : "med";
 const KIND = qp.get("kind") || "procedural";
-const POSE = qp.get("pose") || "grid";
-const GRID = POSE === "grid";
+const KINDS = qp.get("kinds") ? qp.get("kinds").split(",") : null;
+const POSE = qp.get("pose") || (KINDS ? "run" : "grid");
+const GRID = POSE === "grid" || !!KINDS;
 const ANIM = qp.get("anim") === "1";
 const I = qp.has("speedI") ? +qp.get("speedI") : 0.5;
 const W = innerWidth, H = innerHeight;
@@ -137,18 +140,23 @@ function place(cam, view, x0, aspect, py = 0){
   if (V === "face"){ cam.fov = 26; cam.position.set(x0 + 0.55, 1.78, -2.55); cam.lookAt(x0, 1.58, 0); }
   else if (V === "front"){ cam.fov = 30; cam.position.set(x0 + 1.1, 1.45 + fy, -4.9); cam.lookAt(x0, 1.05 + fy, 0); }
   else if (V === "game"){ cam.fov = 60; cam.position.set(x0, 3.8, 6.4); cam.lookAt(x0, 1.0, -10); }
+  else if (V === "game0"){ cam.fov = 58; cam.position.set(x0, 3.05, 5.45); cam.lookAt(x0, 1.45, -8); }
+  // «close» — игровой ракурс со спины, но ближе: проверка ленты шарфа и затылка
+  else if (V === "close"){ cam.fov = 30; cam.position.set(x0 + 0.4, 3.2, 4.6); cam.lookAt(x0, 1.35, 0); }
   else if (V === "side"){ cam.fov = 32; cam.position.set(x0 - 5.0, 1.3 + fy, -0.9); cam.lookAt(x0, 1.0 + fy, -0.2); }
+  else if (V === "back"){ cam.fov = 30; cam.position.set(x0 + 0.3, 1.9, 4.6); cam.lookAt(x0, 1.55, 0); }
   else { cam.fov = 36; cam.position.set(x0 + 2.0, 2.15 + fy, 4.1); cam.lookAt(x0, 1.0 + fy, 0); }
   cam.updateProjectionMatrix(); cam.updateMatrixWorld();
 }
 
-const names = GRID ? ["idle", "front", "game", "run", "jump", "slide", "stumble", "celebrate"] : [POSE];
+const names = KINDS ? KINDS.map(() => POSE) : GRID ? ["idle", "front", "game", "run", "jump", "slide", "stumble", "celebrate"] : [POSE];
 const ctx = { THREE, renderer, scene, camera, quality: Q, look: { mats: look }, qp };
-const prefer = KIND === "glb" ? "glb" : KIND === "auto" ? "auto" : "procedural";
 const url = qp.get("glb") ? new URL(qp.get("glb"), location.href).href : undefined;
 const actors = [];
 for (let i = 0; i < names.length; i++){
   const x0 = GRID ? (i - (names.length - 1) / 2) * SPACING : 0;
+  const kind = KINDS ? KINDS[i] : KIND;
+  const prefer = kind === "glb" ? "glb" : kind === "auto" ? "auto" : "procedural";
   const rizy = await createRizy(ctx, { prefer, url });
   scene.add(rizy.root);
   actors.push({ rizy, sc: scenario(names[i], x0) });
@@ -166,13 +174,14 @@ for (const a of actors){
     if (a.sc.step(DT, a.rizy)) break;
   }
 }
+const simMs = performance.now() - tBuild;
 
 // ---------- рендер ----------
-function drawCallsOfCharacter(){
-  // только персонажи (со своими тенями): прячем окружение
+function drawCallsOfCharacter(a0){
+  // только один персонаж (со своими тенями): прячем окружение
   env.visible = false;
-  for (const a of actors) a.rizy.root.visible = a === actors[0];
-  place(camera, actors[0].sc.view, actors[0].sc.x0, W / H);
+  for (const a of actors) a.rizy.root.visible = a === a0;
+  place(camera, a0.sc.view, a0.sc.x0, W / H);
   const bg = scene.background; scene.background = null;
   renderer.info.autoReset = false; renderer.info.reset();
   renderer.setRenderTarget(null);
@@ -183,7 +192,7 @@ function drawCallsOfCharacter(){
   for (const a of actors) a.rizy.root.visible = true;
   return { calls, tris };
 }
-const charInfo = drawCallsOfCharacter();
+const charInfo = actors.map(drawCallsOfCharacter);
 
 let post = null;
 if (!GRID && qp.get("post") !== "0"){
@@ -195,9 +204,10 @@ if (!GRID && qp.get("post") !== "0"){
   } catch (e){ console.warn("kit-player: post недоступен —", e && e.message); post = null; }
 }
 
+const COLS = KINDS ? KINDS.length : 4;
 function frame(){
   if (GRID){
-    const cols = 4, rows = Math.ceil(actors.length / cols), cw = Math.floor(W / cols), ch = Math.floor(H / rows);
+    const cols = COLS, rows = Math.ceil(actors.length / cols), cw = Math.floor(W / cols), ch = Math.floor(H / rows);
     renderer.setScissorTest(true);
     actors.forEach((a, i) => {
       const cx = (i % cols) * cw, cy = H - ch - Math.floor(i / cols) * ch;
@@ -216,18 +226,31 @@ function frame(){
 frame();
 
 if (GRID){
-  const cols = 4, cw = W / cols, ch = H / Math.ceil(actors.length / cols);
+  const cols = COLS, cw = W / cols, ch = H / Math.ceil(actors.length / cols);
   actors.forEach((a, i) => {
     const d = document.createElement("div"); d.className = "lbl";
-    d.textContent = a.sc.name + " · " + a.rizy.kind;
+    const st = a.rizy.stats();
+    d.textContent = a.sc.name + " · " + a.rizy.kind + (KINDS ? ` · ${st.tris} tris · ${st.callsWithShadows} calls` : "");
     d.style.left = ((i % cols) * cw + 8) + "px"; d.style.top = (Math.floor(i / cols) * ch + 8) + "px";
     document.body.appendChild(d);
   });
 }
+
+// замер CPU кадра кита (update без рендера): среднее по 600 кадрам бега
+function cpuPerFrame(a){
+  const n = 600, t0 = performance.now();
+  for (let i = 0; i < n; i++) a.sc.step(DT, a.rizy);
+  return +((performance.now() - t0) / n).toFixed(4);
+}
 const r0 = actors[0].rizy;
-window.KIT.stats = { kind: r0.kind, glbError: r0.glbError, charCalls: charInfo.calls, charTris: charInfo.tris,
-  state: r0.state, buildMs: Math.round(performance.now() - tBuild), info: r0.rig.info || null };
-info.textContent = `kind=${r0.kind} q=${Q} персонаж: ${charInfo.calls} draw calls (с тенями), ${charInfo.tris} tris` + (r0.glbError ? ` · glb: ${r0.glbError}` : "");
+window.KIT.stats = {
+  kind: r0.kind, glbError: r0.glbError, charCalls: charInfo[0].calls, charTris: charInfo[0].tris,
+  geo: actors.map(a => a.rizy.stats()),
+  state: r0.state, simMs: Math.round(simMs), info: r0.rig.info || null,
+};
+window.KIT.cpu = () => actors.map(cpuPerFrame);
+const s0 = window.KIT.stats.geo[0];
+info.textContent = `kind=${r0.kind} q=${Q} персонаж: ${s0.tris} tris, ${s0.calls} draw calls (${s0.callsWithShadows} с тенями); рендер-проход с тенями ${charInfo[0].calls}/${charInfo[0].tris}` + (r0.glbError ? ` · glb: ${r0.glbError}` : "");
 
 if (ANIM){
   let last = performance.now();

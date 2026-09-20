@@ -1,10 +1,16 @@
 // Разметка HUD: строим DOM один раз и возвращаем ссылки R. Никаких ссылок на index.html.
-import { gemSVG, pauseSVG, playSVG, retrySVG, gearSVG, checkSVG, swarmSVG, handSVG, snowflakeSVG, trophySVG, starSVG } from "./icons.js";
+import { gemSVG, pauseSVG, playSVG, retrySVG, gearSVG, checkSVG, swarmSVG, handSVG, snowflakeSVG, trophySVG, starSVG, heartSVG } from "./icons.js";
 
 export const RING_R = 26;
 export const RING_C = 2 * Math.PI * RING_R;
+export const REV_R = 44;
+export const REV_C = 2 * Math.PI * REV_R;
 
 const h = (html) => { const t = document.createElement("template"); t.innerHTML = html.trim(); return t.content.firstElementChild; };
+
+// переключатель настроек: кнопка-тумблер 48+ px (aria-pressed)
+const toggle = (key, label) => `<div class="rz-set-row"><span>${label}</span>
+  <button class="rz-tgl" data-set="${key}" aria-pressed="false" aria-label="${label}"><i></i></button></div>`;
 
 export function buildDOM(root, { touch }) {
   const R = {};
@@ -20,7 +26,7 @@ export function buildDOM(root, { touch }) {
         <div class="rz-next"><span>до</span><span class="rz-goal"></span><span>м:</span><b></b></div>
       </div>
     </div>
-    <div class="rz-mis" hidden>
+    <div class="rz-mis-wrap"><div class="rz-mis" hidden>
       <div class="rz-mis-bg"></div><div class="rz-mis-lime"></div>
       <div class="rz-mis-in">
         <div class="rz-mis-glyph">${starSVG(true)}</div>
@@ -29,7 +35,7 @@ export function buildDOM(root, { touch }) {
       </div>
       <div class="rz-mis-bar"><div class="rz-mis-fill"></div></div>
       <div class="rz-mis-done">${checkSVG}<span>ГОТОВО!</span><div class="rz-stars rz-stars-done"></div></div>
-    </div>
+    </div></div>
     <div class="rz-tr">
       <div class="rz-pill rz-en"><div class="rz-pill-body"><div class="rz-en-ico">${gemSVG()}</div><span class="rz-en-n rz-stroke"></span></div></div>
       <div class="rz-row2">
@@ -83,7 +89,7 @@ export function buildDOM(root, { touch }) {
         <div class="rz-chip">${trophySVG}<span>Рекорд</span><b class="rz-t-best"></b><span>м</span></div>
         <div class="rz-chip rz-chip-stars">${starSVG(true)}<span>Звёзды:</span><b class="rz-t-stars"></b></div>
       </div>
-      ${touch ? "" : `<div class="rz-keys">Пробел — старт · ← → полоса · ↑ прыжок · ↓ подкат · Esc пауза</div>`}
+      ${touch ? "" : `<div class="rz-keys">← → полоса · ↑ прыжок · ↓ подкат · Esc пауза</div>`}
     </div>
   </div>`);
   root.appendChild(R.title);
@@ -102,8 +108,9 @@ export function buildDOM(root, { touch }) {
       </div>
       <div class="rz-row-btns">
         <button class="rz-btn ghost" data-act="tutorial">Обучение</button>
-        <button class="rz-btn ghost" data-act="menu">В меню</button>
+        <button class="rz-btn ghost" data-act="settings">Настройки</button>
       </div>
+      <button class="rz-btn ghost wide" data-act="menu">В меню</button>
     </div></div>
   </div>`);
   root.appendChild(R.pause);
@@ -118,9 +125,10 @@ export function buildDOM(root, { touch }) {
       <div class="rz-stamp"><div><span>НОВЫЙ РЕКОРД!</span></div></div>
       <div class="rz-rrow r-dist"><div class="ico" style="color:#0536D4">${snowflakeSVG}</div><div class="lbl">Сегодня</div><div class="val"><span class="n"></span><small>м</small></div></div>
       <div class="rz-rrow r-en"><div class="ico">${gemSVG()}</div><div class="lbl">Энергоны</div><div class="val"><span class="n"></span></div></div>
-      <div class="rz-rrow r-bonus"><div class="ico">${starSVG(true)}</div><div class="lbl">Бонус ловкости</div><div class="val"><small>+</small><span class="n"></span><small>м</small></div></div>
-      <div class="rz-rrow total"><div class="ico">${trophySVG}</div><div class="lbl">Итог</div><div class="val"><span class="n"></span><small>м</small></div></div>
+      <div class="rz-rrow r-bonus"><div class="ico">${starSVG(true)}</div><div class="lbl">Бонус ловкости</div><div class="val"><small>+</small><span class="n"></span></div></div>
+      <div class="rz-rrow total"><div class="ico">${gemSVG()}</div><div class="lbl">Всего энергонов</div><div class="val"><span class="n"></span></div></div>
       <div class="rz-best-line"><span>Рекорд: <b class="rz-r-best"></b> м</span><span class="hint"></span></div>
+      <div class="rz-tip" hidden></div>
       <div class="rz-quip"><div class="ava">К</div><p></p></div>
       <div class="rz-mlist"></div>
       <div class="rz-res-btns">
@@ -137,9 +145,66 @@ export function buildDOM(root, { touch }) {
   R.rDist = q(".r-dist", rs); R.rEn = q(".r-en", rs); R.rBonus = q(".r-bonus", rs); R.rTotal = q(".total", rs);
   R.rDistN = q(".r-dist .n", rs); R.rEnN = q(".r-en .n", rs); R.rBonusN = q(".r-bonus .n", rs); R.rTotalN = q(".total .n", rs);
   R.bestLine = q(".rz-best-line", rs); R.rBest = q(".rz-r-best", rs); R.hint = q(".rz-best-line .hint", rs);
+  R.tip = q(".rz-tip", rs);
   R.quip = q(".rz-quip", rs); R.quipAva = q(".rz-quip .ava", rs); R.quipP = q(".rz-quip p", rs);
   R.mlist = q(".rz-mlist", rs); R.resBtns = q(".rz-res-btns", rs); R.restartBtn = q("[data-act=restart]", rs);
   R.streakChip = q(".rz-streakchip", rs);
+
+  // ---------- REVIVE «Спасти Ризи?» (GAME-6) ----------
+  R.revive = h(`<div class="rz-scr rz-revive" hidden>
+    <div class="rz-shade"></div>
+    <div class="rz-center"><div class="rz-card rz-rev-card">
+      <div class="rz-card-head"><div><span>Спасти Ризи?</span></div></div>
+      <div class="rz-rev-dial">
+        <svg class="rz-rev-ring" viewBox="0 0 100 100" aria-hidden="true">
+          <circle cx="50" cy="50" r="${REV_R}" fill="#fff" stroke="rgba(7,13,54,.12)" stroke-width="8"/>
+          <circle class="rz-rev-fill" cx="50" cy="50" r="${REV_R}" fill="none" stroke="#0536D4" stroke-width="8" stroke-linecap="round"
+            stroke-dasharray="${REV_C.toFixed(2)}" stroke-dashoffset="0"/>
+        </svg>
+        <div class="rz-rev-heart">${heartSVG}</div>
+      </div>
+      <div class="rz-rev-btns">
+        <button class="rz-btn main" data-act="revive">${gemSVG()}<span class="rz-rev-cost"></span></button>
+        <button class="rz-btn ghost" data-act="decline">Нет</button>
+      </div>
+      <div class="rz-rev-have"></div>
+    </div></div>
+  </div>`);
+  root.appendChild(R.revive);
+  R.revShade = q(".rz-shade", R.revive); R.revCard = q(".rz-card", R.revive); R.revFill = q(".rz-rev-fill", R.revive);
+  R.revCost = q(".rz-rev-cost", R.revive); R.revHave = q(".rz-rev-have", R.revive); R.revBtns = q(".rz-rev-btns", R.revive);
+  R.revBtn = q("[data-act=revive]", R.revive); R.revHeart = q(".rz-rev-heart", R.revive);
+
+  // ---------- НАСТРОЙКИ (HUD-8) ----------
+  R.settings = h(`<div class="rz-scr rz-settings" hidden>
+    <div class="rz-shade"></div>
+    <div class="rz-center"><div class="rz-card rz-set-card" role="dialog" aria-label="Настройки">
+      <div class="rz-card-head"><div><span>Настройки</span></div></div>
+      <div class="rz-vol">
+        <label for="rzSetM">Музыка</label><input id="rzSetM" class="rz-range" type="range" min="0" max="100" value="70" data-vol="music">
+        <label for="rzSetS">Звуки</label><input id="rzSetS" class="rz-range" type="range" min="0" max="100" value="80" data-vol="sfx">
+      </div>
+      <div class="rz-set-list">
+        <div class="rz-set-row"><span>Меньше движения</span>
+          <div class="rz-seg" role="group" aria-label="Меньше движения">
+            <button data-rm="auto" aria-pressed="true">Авто</button><button data-rm="on" aria-pressed="false">Да</button><button data-rm="off" aria-pressed="false">Нет</button>
+          </div></div>
+        ${toggle("calm", "Спокойный темп")}
+        ${toggle("contrast", "Контрастные препятствия")}
+        ${toggle("vibration", "Вибрация")}
+      </div>
+      <div class="rz-row-btns">
+        <button class="rz-btn ghost" data-act="tutorial">Обучение</button>
+        <button class="rz-btn main" data-act="close">Готово</button>
+      </div>
+    </div></div>
+  </div>`);
+  root.appendChild(R.settings);
+  R.setShade = q(".rz-shade", R.settings); R.setCard = q(".rz-card", R.settings);
+  R.setVolM = q("[data-vol=music]", R.settings); R.setVolS = q("[data-vol=sfx]", R.settings);
+  R.setRm = [...R.settings.querySelectorAll("[data-rm]")];
+  R.setTgl = [...R.settings.querySelectorAll("[data-set]")];
+  R.setClose = q("[data-act=close]", R.settings);
 
   // ---------- СЛОЙ ЭФФЕКТОВ (поверх всех экранов) ----------
   R.fx = h(`<div class="rz-fx">
@@ -147,6 +212,7 @@ export function buildDOM(root, { touch }) {
     <div class="rz-toast"><div>${trophySVG}<span></span></div></div>
     <div class="rz-cd"><span></span></div>
     <div class="rz-tut" hidden>
+      <button class="rz-btn ghost rz-tut-skip" data-act="tutorial:skip">Пропустить</button>
       <div class="rz-tut-zone"><div class="rz-tut-trail"></div><div class="rz-tut-dot"></div><div class="rz-tut-hand">${handSVG}</div></div>
       <div class="rz-tut-card"><div><span class="rz-tut-keys"></span><span class="rz-tut-txt"></span></div></div>
     </div>
@@ -157,7 +223,7 @@ export function buildDOM(root, { touch }) {
   R.cd = q(".rz-cd", R.fx); R.cdTxt = q(".rz-cd > span", R.fx);
   R.tut = q(".rz-tut", R.fx); R.tutZone = q(".rz-tut-zone", R.fx); R.tutTrail = q(".rz-tut-trail", R.fx);
   R.tutDot = q(".rz-tut-dot", R.fx); R.tutHand = q(".rz-tut-hand", R.fx); R.tutKeys = q(".rz-tut-keys", R.fx); R.tutTxt = q(".rz-tut-txt", R.fx);
-  R.tutCard = q(".rz-tut-card > div", R.fx);
+  R.tutCard = q(".rz-tut-card > div", R.fx); R.tutSkip = q(".rz-tut-skip", R.fx);
 
   // пулы: 10 меток и 3 летящих энергона
   R.labels = []; R.labelSpans = [];

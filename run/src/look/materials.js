@@ -1,6 +1,45 @@
 // Ризи RUN v3 — look/materials.js
 // Окружение (PMREM из процедурного неба) + фабрика материалов «войлок / леденец / снег / дерево / лёд / металл / свечение»
 // + общие процедурные текстуры. Модулю нужны только ctx.THREE, ctx.renderer, ctx.scene, ctx.quality.
+// Числа — библия 2.1 (LOOK-2, LOOK-8). Кривая тонмаппинга — PBR Neutral (tonemap.js): лайм и синий бренда
+// рассчитаны на неё (ACES уводил их в жёлтый и фиолетовый), поэтому альбедо > 1 и «подсветки против серости» убраны.
+import { installNeutralToneMapping } from "./tonemap.js";
+
+// ---------- ЦВЕТОВОЙ СЦЕНАРИЙ (LOOK-8) ----------
+// Солнце: азимут LOOK-3 (слева и чуть спереди), высота по ключу. УТРО взято ровно по вектору LOOK-3
+// normalize(−0.62, 0.70, −0.25) = 46.3° (в таблице 38° — вектор LOOK-3 важнее: по нему стоят тени).
+export const SKY_KEYS = {
+  morning: { top: 0x62AEFF, horizon: 0xFFF1E4, sun: 0xFFF3DE, sunI: 2.6, elev: 46.3, hemi: 0.30 },
+  noon:    { top: 0x3F8BFF, horizon: 0xEAF6FF, sun: 0xFFFFFF, sunI: 2.9, elev: 55,   hemi: 0.30, saturation: 1.12 },
+  golden:  { top: 0x7C7BFF, horizon: 0xFFC7B0, sun: 0xFFB27A, sunI: 2.2, elev: 14,   hemi: 0.28 },
+  blue:    { top: 0x0B1E7A, horizon: 0x9DB4FF, sun: 0x9FB8FF, sunI: 0.8, elev: 10,   hemi: 0.45, bloomThresholdDelta: -0.4 },
+};
+// направление НА солнце для высоты elev (градусы); out — [x, y, z]
+export function sunDir(elevDeg, out){
+  const az = Math.atan2(-0.62, -0.25), e = elevDeg * Math.PI / 180, c = Math.cos(e);
+  out = out || [0, 0, 0];
+  out[0] = Math.sin(az) * c; out[1] = Math.sin(e); out[2] = Math.cos(az) * c;
+  return out;
+}
+const v3n = (x, y, z) => { const l = Math.hypot(x, y, z); return [+(x / l).toFixed(4), +(y / l).toFixed(4), +(z / l).toFixed(4)]; };
+
+// ---------- СВЕТ ДЛЯ config.js (владелец main.js переносит числа) ----------
+export const LIGHTS = {
+  toneMapping: "CustomToneMapping",      // = PBR Neutral после импорта look/tonemap.js; с постом не влияет
+  exposure: 1.0,
+  hemi:  { sky: 0xC8DEFF, ground: 0xF4EEE8, intensity: 0.30 },             // при IBL не выше 0.3
+  sun:   { color: 0xFFF1DC, intensity: 2.6, dir: v3n(-0.62, 0.70, -0.25), distance: 30, target: [0, 0, -12], castShadow: true },
+  fill:  { color: 0xBFD8FF, intensity: 0.45, dir: v3n(0.30, 0.50, 1.0), castShadow: false },   // со стороны камеры, справа
+  shadow: {
+    type: "PCFSoftShadowMap", mapSize: { low: 0, med: 1024, high: 2048 },   // low: только blob-тени
+    bias: -0.0003, normalBias: 0.03, near: 1, far: 70,
+    // орто-бокс: мир x −8..8, y −2.5..4.5 (с провалом изгиба), z −40..+8 в пространстве света, target (x, 0, −12)
+    left: -29, right: 22, bottom: -15, top: 14,
+  },
+  fog:   { color: 0xFFF1E4, near: 30, far: 95 },    // цвет == горизонт неба (SKY_KEYS.morning.horizon)
+  sky:   { top: 0x62AEFF, horizon: 0xFFF1E4 },
+  envMapIntensity: { world: 0.9, hero: 1.1 },
+};
 
 // ---------- ДЕТЕРМИНИРОВАННЫЙ ШУМ (свой ГПСЧ: текстуры одинаковы при любом ?seed) ----------
 function makeRng(seed){
@@ -36,8 +75,16 @@ function fbm(Px, Py, oct, seed){
 }
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
-export async function createLook(ctx){
+export async function createLook(ctx, opts){
   const THREE = ctx.THREE, renderer = ctx.renderer, scene = ctx.scene;
+  installNeutralToneMapping();                      // чанк кривой — до компиляции первых материалов
+  const O = Object.assign({
+    envSky: 0.60,       // яркость неба в окружении (калибровка на стенде: тень/свет войлок 0.48, снег 0.53)
+    envTint: 0.65,       // верх неба в окружении смешан с белым: насыщенный #62AEFF синит снег и смывает бренд в бликах
+    envGround: 0.42,    // отсвет снега снизу: ниже реального, иначе тени «молочные»
+    envSun: 1.0,        // диск и ореол солнца в окружении (блики лака)
+    key: "morning",
+  }, opts || {});
   const Q = ctx.quality === "low" ? "low" : ctx.quality === "high" ? "high" : "med";
   const LOW = Q === "low", HIGH = Q === "high";
   const S = LOW ? 512 : 1024;                       // размер тайлов земли/дерева/шума
@@ -80,33 +127,36 @@ export async function createLook(ctx){
   }
   const rgb = c => { const x = new THREE.Color(c).getHex(); return [(x >> 16) & 255, (x >> 8) & 255, x & 255]; };
 
-  // ---------- ОКРУЖЕНИЕ: небо-градиент + тёплое солнце → PMREM ----------
-  function buildEnv(){
+  // ---------- ОКРУЖЕНИЕ: небо ключа сценария + солнце → PMREM ----------
+  // Формула купола — как у неба LOOK-8 (mix(horizon, top, pow(saturate(y·1.6+0.08), 0.6))), ниже горизонта — снег.
+  // В r160 диффуз от окружения = цвет окружения × envMapIntensity × альбедо, так что O.envSky ≈ «сила амбиента».
+  const envCache = new Map();
+  function bakeEnv(name){
+    const K = SKY_KEYS[name] || SKY_KEYS.morning;
     const sky = new THREE.Scene();
     const col = (hex, k) => new THREE.Color(hex).multiplyScalar(k);
+    const sd = sunDir(K.elev);
+    const kSky = O.envSky * (name === "blue" ? 0.6 : 1);
     const mat = new THREE.ShaderMaterial({
       side: THREE.BackSide, depthWrite: false, depthTest: false,
       uniforms: {
-        // яркость неба ~0.3: в r160 диффуз от окружения = PI·env, так что 0.3 ≈ полусфера интенсивностью ~1
-        uZen: { value: col("#6ab4f0", 0.30) },     // холодный зенит
-        uMid: { value: col("#b4e0ff", 0.34) },
-        uHor: { value: col("#ffe4d8", 0.50) },     // кремово-розовый горизонт
-        uGnd: { value: col("#f2f6ff", 0.62) },     // отсвет освещённого снега снизу (он ярче неба) — не даёт лаку темнеть по краям
-        uSun: { value: col("#fff0d2", 1.0) },
-        uSunDir: { value: new THREE.Vector3(11, 17, 7).normalize() },   // как солнце в игре
+        uTop: { value: col(K.top, kSky).lerp(col(0xffffff, kSky), O.envTint) },
+        uHor: { value: col(K.horizon, kSky) },
+        uGnd: { value: col(0xF2F6FF, O.envGround).lerp(col(K.horizon, O.envGround), 0.25) },
+        uSun: { value: col(K.sun, O.envSun * K.sunI / 2.6) },
+        uSunDir: { value: new THREE.Vector3(sd[0], sd[1], sd[2]) },
       },
       vertexShader: `varying vec3 vDir;
         void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
       fragmentShader: `varying vec3 vDir;
-        uniform vec3 uZen, uMid, uHor, uGnd, uSun, uSunDir;
+        uniform vec3 uTop, uHor, uGnd, uSun, uSunDir;
         void main(){
           vec3 d = normalize(vDir); float y = d.y;
-          vec3 sky = mix(uHor, uMid, smoothstep(0.0, 0.28, y));
-          sky = mix(sky, uZen, smoothstep(0.25, 1.0, y));
-          vec3 c = y >= 0.0 ? sky : mix(uHor, uGnd, smoothstep(0.0, 0.18, -y));
+          vec3 c = y >= 0.0 ? mix(uHor, uTop, pow(clamp(y * 1.6 + 0.08, 0.0, 1.0), 0.6))
+                            : mix(uHor * 0.96, uGnd, smoothstep(0.0, 0.2, -y));
           float s = max(dot(d, uSunDir), 0.0);
-          // диск (HDR, для бликов лака) + мягкий ореол + тёплая дымка вокруг
-          c += uSun * (pow(s, 1400.0) * 24.0 + pow(s, 90.0) * 0.5 + pow(s, 6.0) * 0.12);
+          // диск (HDR 8, для бликов лака) + ореол 0.6 + тёплая дымка
+          c += uSun * (smoothstep(0.9990, 0.9996, s) * 8.0 + pow(s, 64.0) * 0.6 + pow(s, 6.0) * 0.06);
           gl_FragColor = vec4(c, 1.0);
         }`,
     });
@@ -115,11 +165,17 @@ export async function createLook(ctx){
     const pm = new THREE.PMREMGenerator(renderer);
     const rt = pm.fromScene(sky, 0.015, 0.1, 100);
     pm.dispose(); geo.dispose(); mat.dispose();
-    rt.texture.name = "look:env";
+    rt.texture.name = "look:env:" + name;
     return rt.texture;
   }
+  function envFor(name){
+    if (!SKY_KEYS[name]) name = "morning";
+    let t = envCache.get(name);
+    if (!t){ t = bakeEnv(name); envCache.set(name, t); }
+    return t;
+  }
   const tEnv = performance.now();
-  const env = buildEnv();
+  const env = envFor(O.key);
   const msEnv = Math.round(performance.now() - tEnv);
   scene.environment = env;
 
@@ -311,7 +367,7 @@ export async function createLook(ctx){
 
   // ---------- ФАБРИКА МАТЕРИАЛОВ ----------
   // служебные ключи опций (не свойства материала)
-  const SPECIAL = new Set(["repeat", "normal", "unique", "fibre", "stripe", "stripes", "pattern", "sparkle", "transmission"]);
+  const SPECIAL = new Set(["repeat", "normal", "unique", "fibre", "stripe", "stripes", "pattern", "sparkle", "transmission", "hero"]);
   const keyVal = v => {
     if (v == null || typeof v !== "object") return String(v);
     if (v.isColor) return v.getHexString();
@@ -346,15 +402,18 @@ export async function createLook(ctx){
   const Phys = p => new THREE.MeshPhysicalMaterial(p);
   const nscale = (o, def) => { const s = o && o.normal != null ? o.normal : def; return new THREE.Vector2(s, s); };
 
-  // войлок: персонажи, ёлки, помпоны
+  // envMapIntensity по LOOK-2: мир 0.9, Ризи (o.hero) 1.1
+  const envI = o => (o && o.hero ? LIGHTS.envMapIntensity.hero : LIGHTS.envMapIntensity.world);
+
+  // войлок: персонажи, ёлки, помпоны (LOOK-2: roughness 0.9, sheen 1, sheenRoughness 0.7, sheenColor = база → белый 40%)
   function felt(color, o){
     return cached("felt", colKey(color), o, () => {
       const c = new THREE.Color(color), fib = !(o && o.fibre === false);
-      const p = { color: c, roughness: 0.85, metalness: 0, envMapIntensity: 1 };
+      const p = { color: c, roughness: 0.9, metalness: 0, envMapIntensity: envI(o) };
       if (fib){ p.normalMap = rep(noiseNormal, o && o.repeat != null ? o.repeat : 2); p.normalScale = nscale(o, 0.3); }
-      if (LOW) return apply(Std(Object.assign(p, { roughness: 0.9 })), o);
+      if (LOW) return apply(Std(p), o);
       return apply(Phys(Object.assign(p, {
-        sheen: 1, sheenColor: c.clone().lerp(WHITE, 0.3), sheenRoughness: 0.8,
+        sheen: 1, sheenColor: c.clone().lerp(WHITE, 0.4), sheenRoughness: 0.7,
       })), o);
     });
   }
@@ -363,30 +422,33 @@ export async function createLook(ctx){
   function candy(color, o){
     return cached("candy", colKey(color), o, () => {
       const c = new THREE.Color(color);
-      // лёгкое собственное свечение цветом узора — «сахарная» полупрозрачность, белые полосы в тени не серые
-      const p = { color: c, roughness: 0.35, metalness: 0, envMapIntensity: 1, emissive: c.clone(), emissiveIntensity: 0.1 };
+      // LOOK-2: roughness 0.3, clearcoat 1 / 0.1. Совсем слабое собственное свечение цветом — «сахарная» толща,
+      // полосы в тени не серые (0.05 при порог bloom 1.2 ничего не зажигает)
+      const p = { color: c, roughness: 0.3, metalness: 0, envMapIntensity: envI(o), emissive: c.clone(), emissiveIntensity: 0.05 };
       if (o && o.stripe != null){
         const kind = o.pattern === "swirl" ? "swirl" : "stripes";
         p.map = rep(patternTex(color, o.stripe, o.stripes || (kind === "swirl" ? 4 : 3), kind), o.repeat);
         p.color = WHITE.clone(); p.emissive = WHITE.clone(); p.emissiveMap = p.map;
       }
       if (LOW) return apply(Std(Object.assign(p, { roughness: 0.26 })), o);
-      return apply(Phys(Object.assign(p, { clearcoat: 1, clearcoatRoughness: 0.12 })), o);
+      // базовый слой бликует вполсилы: под лаком два слоя Френеля отражали светлое небо дважды и
+      // высветляли насыщенные цвета (синий бордюр уходил в «перивинкл»); блеск даёт лак
+      return apply(Phys(Object.assign(p, { clearcoat: 1, clearcoatRoughness: 0.1, specularIntensity: 0.35 })), o);
     });
   }
 
-  // снег: белый (не серый!), мягкие нормали, холодные впадины, редкие искры в emissive (ловит bloom)
+  // снег: #F2F6FF, roughness 0.8 (LOOK-2). «Не молочный» = рельеф нормалей + холодные впадины в альбедо +
+  // приглушённый specular (без пластикового блеска на скользящих углах) + тени 45–55% (калибровка окружения),
+  // а не альбедо > 1. Редкие искры в emissive ×6 — единственное, что на снегу проходит порог bloom.
   function snow(o){
     return cached("snow", "", o, () => {
       const r = o && o.repeat != null ? o.repeat : 1;
       const spk = o && o.sparkle != null ? o.sparkle : 1;
       const p = {
-        // альбедо > 1 с голубым смещением — сознательный «стилизованный» ход: ACES иначе давит белый снег в серый;
-        // освещённый снег уходит в чистый белый, тень — в светло-голубую
-        color: new THREE.Color().setRGB(1.7, 1.78, 2.0), map: rep(SNOW.albedo, r), roughness: 0.92, metalness: 0,
+        color: new THREE.Color(0xF2F6FF), map: rep(SNOW.albedo, r), roughness: 0.8, metalness: 0,
         normalMap: rep(SNOW.normal, r), normalScale: nscale(o, 0.8),
-        emissive: 0xffffff, emissiveMap: spk > 0 ? rep(SNOW.sparkleMap, r) : null, emissiveIntensity: spk > 0 ? 3 * spk : 0,
-        envMapIntensity: 1.1,
+        emissive: 0xffffff, emissiveMap: spk > 0 ? rep(SNOW.sparkleMap, r) : null, emissiveIntensity: spk > 0 ? 6 * spk : 0,
+        envMapIntensity: envI(o),
       };
       if (LOW) return apply(Std(p), o);
       // приглушённый зеркальный отклик: снег матовый, без пластикового блеска на скользящих углах
@@ -402,22 +464,22 @@ export async function createLook(ctx){
       return apply(Std({
         color: 0xffffff, map: rep(WOOD.albedo, r), metalness: 0, roughness: 1,
         normalMap: rep(WOOD.normal, r), normalScale: nscale(o, 1),
-        roughnessMap: orm, aoMap: orm, aoMapIntensity: 1, envMapIntensity: 1,
+        roughnessMap: orm, aoMap: orm, aoMapIntensity: 1, envMapIntensity: envI(o),
       }), o);
     });
   }
 
-  // лёд: глянцевый бледно-циановый, лак, лёгкое «внутреннее» свечение; пропускание только high + o.transmission
+  // лёд (LOOK-2): #BFE6FF, roughness 0.08, clearcoat 1, envMapIntensity 1.3; пропускание только high + o.transmission
   function ice(o){
     return cached("ice", "", o, () => {
-      // насыщенная голубая «толща» + сильные отражения неба/солнца + волнистая нормаль → читается как стекло, не пластик
+      // бледная голубая толща + отражения неба/солнца + волнистая нормаль → стекло, а не пластик
       const p = {
-        color: 0x3cb6ec, roughness: 0.06, metalness: 0, envMapIntensity: 1.7,
-        emissive: 0x1a86cc, emissiveIntensity: 0.4,
+        color: 0xBFE6FF, roughness: 0.08, metalness: 0, envMapIntensity: 1.3,
+        emissive: 0x3a9ae0, emissiveIntensity: 0.06,
         normalMap: rep(noiseNormal, o && o.repeat != null ? o.repeat : 0.5), normalScale: nscale(o, 0.3),
       };
       if (LOW) return apply(Std(Object.assign(p, { metalness: 0.15, roughness: 0.1 })), o);
-      const m = Phys(Object.assign(p, { clearcoat: 1, clearcoatRoughness: 0.06, ior: 1.6, specularIntensity: 1 }));
+      const m = Phys(Object.assign(p, { clearcoat: 1, clearcoatRoughness: 0.05, ior: 1.5, specularIntensity: 1 }));
       if (HIGH && o && o.transmission){ m.transmission = 0.55; m.thickness = 0.8; m.attenuationColor.set(0x8fd8ff); m.attenuationDistance = 1.5; }
       return apply(m, o);
     });
@@ -428,16 +490,19 @@ export async function createLook(ctx){
     // слабый собственный подсвет цветом: жёлтое золото под голубым небом иначе уходит в оливковый
     return cached("metal", colKey(color), o, () => {
       const c = new THREE.Color(color);
-      return apply(Std({ color: c, metalness: 1, roughness: 0.28, envMapIntensity: 2.2, emissive: c, emissiveIntensity: 0.1 }), o);
+      return apply(Std({ color: c, metalness: 1, roughness: 0.28, envMapIntensity: 1.6, emissive: c, emissiveIntensity: 0.05 }), o);
     });
   }
 
-  // свечение для bloom: emissiveIntensity > 1, тонмаппинг остаётся (toneMapped: true)
+  // свечение для bloom: emissiveIntensity > 1, тонмаппинг остаётся (toneMapped: true).
+  // Верность бренда: PBR Neutral обесцвечивает пик выше ~1.5 (у лайма синий канал всплывает), поэтому свет
+  // сверху почти не добавляем — диффуз ×0.25 и слабые отражения. Расчёт кривой: оболочка энергона 1.2 при солнце
+  // даёт пик ≈ 1.45 и ΔE ≈ 3 к #C0FF3F (было ×0.6 и полные отражения: пик 1.9, ΔE ≈ 17 на стенде).
   function glow(color, intensity = 2.5, o){
     return cached("glow", colKey(color) + "|" + intensity, o, () => {
       const c = new THREE.Color(color);
-      return apply(Std({ color: c.clone().multiplyScalar(0.6), emissive: c, emissiveIntensity: intensity,
-                         roughness: 0.4, metalness: 0, toneMapped: true }), o);
+      return apply(Std({ color: c.clone().multiplyScalar(0.25), emissive: c, emissiveIntensity: intensity,
+                         roughness: 0.4, metalness: 0, envMapIntensity: 0.35, toneMapped: true }), o);
     });
   }
 
@@ -447,9 +512,17 @@ export async function createLook(ctx){
     for (const t of [...repCache.values(), ...patCache.values(), noiseNormal, softDot, sparkle,
                      SNOW.normal, SNOW.albedo, SNOW.sparkleMap, WOOD.albedo, WOOD.normal, WOOD.orm]) t.dispose();
     repCache.clear(); patCache.clear();
-    if (scene.environment === env) scene.environment = null;
-    env.dispose();
+    for (const t of envCache.values()){ if (scene.environment === t) scene.environment = null; t.dispose(); }
+    envCache.clear();
   }
+
+  // LOOK-8: PMREM для всех ключей сценария (запечь при загрузке, между запеканиями уступаем цикл событий)
+  async function bakeEnvKeys(){
+    for (const k of Object.keys(SKY_KEYS)){ if (!envCache.has(k)){ await tick(); envFor(k); } }
+    return envCache;
+  }
+  // переключить окружение сцены (в середине перехода палитры или внутри тоннеля)
+  function setEnv(name){ const t = envFor(name); scene.environment = t; return t; }
 
   return {
     env, quality: Q,
@@ -459,8 +532,10 @@ export async function createLook(ctx){
       // дополнительно (вне контракта): парные карты
       snowNormal: SNOW.normal, snowSparkle: SNOW.sparkleMap, woodNormal: WOOD.normal, woodOrm: WOOD.orm,
     },
-    // рекомендуемый свет при включённом окружении (PMREM уже даёт мягкий «амбиент»)
-    hints: { hemi: 0.3, sun: 3.0, fill: 0.25, exposure: 1.05 },
+    // рекомендуемый свет при включённом окружении (PMREM уже даёт мягкий «амбиент»); полный набор — LIGHTS
+    hints: { hemi: LIGHTS.hemi.intensity, sun: LIGHTS.sun.intensity, fill: LIGHTS.fill.intensity, exposure: LIGHTS.exposure },
+    // дополнительно: ключи неба и свет библии, окружение по ключу
+    lights: LIGHTS, skyKeys: SKY_KEYS, sunDir, envFor, setEnv, bakeEnvKeys, opts: O,
     stats: () => ({ materials: cache.size, textures: repCache.size + patCache.size + 10, ms: Object.assign({ env: msEnv }, ms) }),
     dispose,
   };

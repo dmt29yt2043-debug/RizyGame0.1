@@ -1,13 +1,14 @@
 // world-kit: трёхслойный инстансный декор с ритмом (WORLD-2) + фонари каждые 12 м через сторону.
 // A ближний (сетка 3 м, x ±5.4..7.5, 30% пропусков, заборы сериями), B средний (9 ± 3 м, x ±9.5..18),
-// C дальние карточки (x ±26..70), фонари. Запись идёт в кольцевые буферы по «дистанции трассы» s;
+// C дальние карточки (x ±26..70), фонари, льдины на реке (WORLD-6). Запись идёт в кольцевые буферы по «дистанции трассы» s;
 // экземпляры переписываются только когда список изменился (спавн/уход за камеру), прокрутка — сдвигом группы.
 import * as THREE from "three";
 import { Part, makeRng } from "./util.js";
 import * as PR from "./props.js";
 import { bankHeight } from "./track.js";
 
-export const L_NEAR = 0, L_MID = 1, L_FAR = 2, L_LAMP = 3;
+export const L_NEAR = 0, L_MID = 1, L_FAR = 2, L_LAMP = 3, L_RIVER = 4;
+const NL = 5;                                        // число слоёв
 const AHEAD = 112, BEHIND = 12;
 
 class Ring {
@@ -32,6 +33,7 @@ export function createDecor(mats, o){
   const Q = o.quality || "med";
   const seed = (o.seed >>> 0) || 1;
   const blocked = o.blocked || (() => false);
+  const river = o.river || null;                     // createRiver(): sideAt(s, pad) → −1 / 0 / 1
   const root = new THREE.Group(); root.name = "world:decor";
   const T = [];                                     // типы: { layer, parts, halo? }
   const ownGeo = [];
@@ -66,6 +68,7 @@ export function createDecor(mats, o){
   const LAMP = type(L_LAMP, [[lampG.body, mats.candy, 16], [lampG.core, mats.glowLamp, 16, { receive: false }],
     [new THREE.PlaneGeometry(1, 1), mats.haloLamp, 16, { receive: false, renderOrder: 3 }]]);
   T[LAMP].halo = 2; T[LAMP].coreY = lampG.coreY;
+  const FLOE = type(L_RIVER, [[PR.floe(), mats.ice, 48, { receive: true }]]);
 
   // веса ближнего и среднего слоёв (забор — отдельной серией)
   const NEAR_PICK = [[N.fir, 0.30], [N.hump, 0.22], [N.cane, 0.18], [N.lolli, 0.18], [N.snowman, 0.12]];
@@ -74,12 +77,12 @@ export function createDecor(mats, o){
 
   // ---------- состояние слоёв ----------
   const SIDES = [-1, 1];
-  const rings = [[new Ring(64), new Ring(64)], [new Ring(32), new Ring(32)], [new Ring(32), new Ring(32)], [new Ring(20)]];
+  const rings = [[new Ring(64), new Ring(64)], [new Ring(32), new Ring(32)], [new Ring(32), new Ring(32)], [new Ring(20)], [new Ring(24), new Ring(24)]];
   const rng = [[makeRng(seed * 11 + 1), makeRng(seed * 11 + 2)], [makeRng(seed * 13 + 3), makeRng(seed * 13 + 4)],
-               [makeRng(seed * 17 + 5), makeRng(seed * 17 + 6)], [makeRng(seed * 19 + 7)]];
-  const next = [[0, 0], [0, 0], [0, 0], [0]];
+               [makeRng(seed * 17 + 5), makeRng(seed * 17 + 6)], [makeRng(seed * 19 + 7)], [makeRng(seed * 29 + 8), makeRng(seed * 29 + 9)]];
+  const next = [[0, 0], [0, 0], [0, 0], [0], [0, 0]];
   const side = { last: [[-1, -1], [-1, -1]], fence: [0, 0], cool: [0, 0], lampSide: -1 };
-  const dirty = [true, true, true, true];
+  const dirty = [true, true, true, true, true];
   let s0 = 0, lastDist = -1e9;
 
   function pickW(r, table, avoid){
@@ -117,6 +120,7 @@ export function createDecor(mats, o){
   function spawnMid(si, s){
     const sd = SIDES[si], r = rng[L_MID][si], ring = rings[L_MID][si];
     if (blocked(s, L_MID, sd)) return;
+    if (river && river.sideAt(s, 14) === sd) return;          // река заменяет средний слой с этой стороны
     const t = pickW(r, MID_PICK, side.last[1][si]); side.last[1][si] = t;
     const x = sd * (9.5 + r() * 8.5), sc = 0.85 + r() * 0.35;
     let yaw;
@@ -129,7 +133,8 @@ export function createDecor(mats, o){
     const sd = SIDES[si], r = rng[L_FAR][si], ring = rings[L_FAR][si];
     if (blocked(s, L_FAR, sd)) return;
     const t = r() < 0.62 ? F.trees : F.houses;
-    const x = sd * (26 + r() * 44), w = (t === F.trees ? 18 : 22) + r() * 14, h = w * (0.42 + r() * 0.16);
+    const x0 = river && river.sideAt(s, 20) === sd ? 38 : 26;   // за рекой, а не на льду
+    const x = sd * (x0 + r() * (70 - x0)), w = (t === F.trees ? 18 : 22) + r() * 14, h = w * (0.42 + r() * 0.16);
     const yaw = -sd * 0.18 * r();
     ring.push(s, t, x, -0.5, Math.cos(yaw), Math.sin(yaw), w, h, 0.9 + r() * 0.1);
   }
@@ -140,9 +145,17 @@ export function createDecor(mats, o){
     rings[L_LAMP][0].push(s, LAMP, x, bankHeight(5.45) * 0.55 - 0.05, 1, 0, 1, 1, 1);
   }
 
+  // льдины: только внутри русла (|x| 17..29 — с запасом от берегов 12..34)
+  function spawnFloe(si, s){
+    const sd = SIDES[si], r = rng[L_RIVER][si], ring = rings[L_RIVER][si];
+    if (!river || river.sideAt(s, -12) !== sd) return;
+    const x = sd * (17 + r() * 12), sc = 0.7 + r() * 1.1, yaw = r() * Math.PI * 2;
+    ring.push(s, FLOE, x, -0.26, Math.cos(yaw), Math.sin(yaw), sc, 1, 0.94 + r() * 0.1);
+  }
+
   function reset(dist){
     for (const L of rings) for (const g of L) g.clear();
-    for (let l = 0; l < 3; l++) for (let si = 0; si < 2; si++) next[l][si] = dist - BEHIND + (l === L_NEAR ? 0 : rng[l][si]() * 6);
+    for (const l of [L_NEAR, L_MID, L_FAR, L_RIVER]) for (let si = 0; si < 2; si++) next[l][si] = dist - BEHIND + (l === L_NEAR ? 0 : rng[l][si]() * 6);
     next[L_LAMP][0] = Math.ceil((dist - BEHIND) / 12) * 12;
     side.fence[0] = side.fence[1] = 0; side.cool[0] = side.cool[1] = 0;
     s0 = Math.floor(dist); dirty.fill(true);
@@ -159,7 +172,7 @@ export function createDecor(mats, o){
         const sx = ring.sx[i], sy = ring.sy[i], tt = ring.tint[i];
         for (let j = 0; j < ty.parts.length; j++){
           if (j === ty.halo) ty.parts[j].pushS(x, y + ty.coreY * sy, z, 1, 0, 1.9, 1.9, 1.9, 1, 1, 1);
-          else ty.parts[j].pushS(x, y, z, cs, sn, sx, sy, layer === L_FAR ? 1 : sx, tt, tt, tt);
+          else ty.parts[j].pushS(x, y, z, cs, sn, sx, sy, layer === L_FAR ? 1 : layer === L_RIVER ? sx * 0.8 : sx, tt, tt, tt);
         }
       }
     }
@@ -176,16 +189,17 @@ export function createDecor(mats, o){
       while (next[L_NEAR][si] < lim){ spawnNear(si, next[L_NEAR][si]); next[L_NEAR][si] += STEP_NEAR; dirty[L_NEAR] = true; }
       while (next[L_MID][si] < lim){ spawnMid(si, next[L_MID][si]); next[L_MID][si] += 6 + rng[L_MID][si]() * 6; dirty[L_MID] = true; }
       while (next[L_FAR][si] < lim + 20){ spawnFar(si, next[L_FAR][si]); next[L_FAR][si] += 7 + rng[L_FAR][si]() * 8; dirty[L_FAR] = true; }
+      while (next[L_RIVER][si] < lim){ spawnFloe(si, next[L_RIVER][si]); next[L_RIVER][si] += 4 + rng[L_RIVER][si]() * 6; dirty[L_RIVER] = true; }
     }
     while (next[L_LAMP][0] < lim){ spawnLamp(next[L_LAMP][0]); next[L_LAMP][0] += 12; dirty[L_LAMP] = true; }
-    for (let l = 0; l < 4; l++) for (let g = 0; g < rings[l].length; g++){
+    for (let l = 0; l < NL; l++) for (let g = 0; g < rings[l].length; g++){
       const ring = rings[l][g];
       const back = l === L_FAR ? old - 30 : old;
       while (ring.len && ring.s[ring.head] < back){ ring.shift(); dirty[l] = true; }
     }
     if (dist - s0 > 400){ s0 += 400; dirty.fill(true); }
     root.position.z = dist - s0;
-    for (let l = 0; l < 4; l++) if (dirty[l]) rebuild(l);
+    for (let l = 0; l < NL; l++) if (dirty[l]) rebuild(l);
   }
 
   // пересобрать уже заспавненное (после смены планов сет-пьес): просто начать слой заново от текущей дистанции

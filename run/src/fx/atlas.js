@@ -13,6 +13,10 @@ function rng(seed){
   };
 }
 const sstep = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+// ПРОЗРАЧНАЯ РАМКА ячейки: альфа гарантированно 0 в внешних ~7% (≈9 px из 128). Ячейки лежат ровными
+// квадрантами (степень двойки), поэтому box-мипы не смешивают соседей до уровня 1×1; рамка + отрицательный
+// LOD-bias в pool.js закрывают и этот последний случай — растекания форм друг в друга нет.
+const gut = (u, v) => sstep(1.0, 0.86, Math.max(Math.abs(u), Math.abs(v)));
 
 export function createAtlas(){
   const S = 256, C = 128;
@@ -41,7 +45,7 @@ export function createAtlas(){
         const nl = Math.max(0, -dx * 0.35 - dy * 0.6 + h * 0.72);
         lit += nl * w; wsum += w;
       }
-      const a = sstep(0.05, 0.55, dens) * sstep(1.0, 0.86, Math.hypot(u, v));
+      const a = sstep(0.05, 0.55, dens) * sstep(1.0, 0.86, Math.hypot(u, v)) * gut(u, v);
       const L = wsum > 0 ? Math.min(1, 0.35 + lit / wsum * 0.75) : 1;
       const i = ((oy + y) * S + ox + x) * 4;
       D[i] = L * 255; D[i + 1] = 255; D[i + 2] = 255; D[i + 3] = a * 255;
@@ -56,7 +60,7 @@ export function createAtlas(){
       const ray = Math.exp(-ay * ay * 700) * Math.pow(Math.max(0, 1 - ax), 2.4) + Math.exp(-ax * ax * 700) * Math.pow(Math.max(0, 1 - ay), 2.4);
       const du = Math.abs(dx + dy) * 0.7071, dv = Math.abs(dx - dy) * 0.7071;
       const diag = (Math.exp(-dv * dv * 1200) * Math.pow(Math.max(0, 1 - du * 2.2), 2) + Math.exp(-du * du * 1200) * Math.pow(Math.max(0, 1 - dv * 2.2), 2)) * 0.4;
-      const a = Math.min(1, ray + diag + Math.exp(-r2 * 40) + Math.exp(-r2 * 6) * 0.22);
+      const a = Math.min(1, ray + diag + Math.exp(-r2 * 40) + Math.exp(-r2 * 6) * 0.22) * gut(dx, dy);
       const i = ((oy + y) * S + ox + x) * 4;
       D[i] = 255; D[i + 1] = 255; D[i + 2] = 255; D[i + 3] = a * 255;
     }
@@ -78,7 +82,7 @@ export function createAtlas(){
           if (ba > 0 && ba < 0.28) a = Math.max(a, Math.exp(-bc * bc * 1100) * (1 - ba / 0.3) * 0.9);
         }
       }
-      a = Math.min(1, a + Math.exp(-r * r * 60) * 0.9) * sstep(1, 0.9, r);
+      a = Math.min(1, a + Math.exp(-r * r * 60) * 0.9) * sstep(1, 0.9, r) * gut(u, v);
       const i = ((oy + y) * S + ox + x) * 4;
       D[i] = 255; D[i + 1] = 255; D[i + 2] = 255; D[i + 3] = a * 255;
     }

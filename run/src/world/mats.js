@@ -2,7 +2,7 @@
 // иначе — простые MeshStandard. Поверх — патчи кита: карамельные полосы по uv (uv.y = 1),
 // rim у опасностей, блёстки трассы, «зоны» сет-пьес (мост: лёд реки, дощатый настил, лаймовые бордюры).
 import * as THREE from "three";
-import { patch, softDotTex } from "./util.js";
+import { patch, softDotTex, loadKitFont, SIGN_FONT } from "./util.js";
 
 const lin = hex => new THREE.Color(hex);           // THREE.Color уже в линейном рабочем пространстве
 
@@ -65,7 +65,6 @@ export function createMats(ctx, U){
     ice:   own(kitPatch(baseIce({}), "kitIce")),
     candyHaz: own(kitPatch(baseCandy({ envMapIntensity: 1.0 }), "kitCandyHaz", { str: rimStr, pow: 4 })),
     feltHaz:  own(kitPatch(baseFelt({ envMapIntensity: 1.0 }), "kitFeltHaz", { str: rimStr, pow: 4 })),
-    iceHaz:   own(kitPatch(baseIce({}), "kitIceHaz", { str: rimStr, pow: 4 })),
   };
 
   // ---------- свечение (MeshBasic, HDR-цвет → bloom по максимуму канала) ----------
@@ -84,9 +83,14 @@ export function createMats(ctx, U){
 
   // ---------- энергон ----------
   {
-    const P = { color: 0xC0FF3F, emissive: 0x7DFF00, emissiveIntensity: 1.2, roughness: 0.25, metalness: 0, flatShading: true };
-    const shell = LOW ? new THREE.MeshStandardMaterial(P) : new THREE.MeshPhysicalMaterial(Object.assign(P, { clearcoat: 1, clearcoatRoughness: 0.08 }));
-    shell.transparent = true; shell.opacity = 0.86; shell.envMapIntensity = 1.2;
+    // Оболочка НЕ должна пересекать порог bloom (1.2 по максимальному каналу): солнце 2.6 даёт ≈0.83 в зелёном,
+    // поэтому собственное свечение 0.3 (а не 1.2 из WORLD-5 — то число считалось для bloom по яркости).
+    // Светится только ядро 3.5, видное сквозь грани. Непрозрачная: без сортировки и «молочной» заливки.
+    // Цвет свечения #A6F02A вместо #7DFF00: чистый зелёный уводил оттенок от лайма #C0FF3F в «траву».
+    // clearcoat 0.6 и env 0.55: грани ловят блик, но светлое небо в отражении не «молочит» лайм (ΔE к #C0FF3F)
+    const P = { color: 0xC0FF3F, emissive: 0xA6F02A, emissiveIntensity: 0.3, roughness: 0.3, metalness: 0, flatShading: true };
+    const shell = LOW ? new THREE.MeshStandardMaterial(P) : new THREE.MeshPhysicalMaterial(Object.assign(P, { clearcoat: 0.6, clearcoatRoughness: 0.12 }));
+    shell.envMapIntensity = 0.55;
     mats.coinShell = own(patch(shell, {
       key: "kitCoin", uniforms: { uRimCol: U.uRimColCoin, uRimStr: rimStrCoin, uRimPow: { value: 2 } },
       fPars: "uniform vec3 uRimCol; uniform float uRimStr; uniform float uRimPow;", fEmis: RIM,
@@ -113,7 +117,7 @@ export function createMats(ctx, U){
           #endif
           vec4 mv = viewMatrix * c;
           mv.xy += position.xy * sc;
-          mv.z += uLift;
+          mv.z += uLift;                 // uLift < 0 — ореол позади объекта: тест глубины прячет часть, закрытую им
           vUv = uv;
           #ifdef USE_INSTANCING_COLOR
             vCol = instanceColor;
@@ -136,6 +140,7 @@ export function createMats(ctx, U){
     return own(m);
   }
   mats.haloCoin = haloMat(0xC0FF3F, 0.32);
+  mats.haloCoin.uniforms.uLift.value = -0.4;         // ореол энергона за кристаллом, не поверх граней
   mats.haloLamp = haloMat(0xFFD890, 0.0);
 
   // ---------- blob-тень ----------
@@ -229,16 +234,27 @@ export function createMats(ctx, U){
     uniforms: { uDistMod: U.uDistMod, uBridge: U.uBridge },
     vPars: ZONE + "uniform float uDistMod; uniform vec2 uBridge;",
   });
+  // река (WORLD-6): русло |x| 12..34 с одной стороны, концы-«линзы», лёгкий меандр; мост — лёд с обеих сторон
+  const RIVER_GLSL = `
+    float kitRiverSeg(vec3 w, vec4 r, float s){
+      if (r.w < 0.5) return 0.0;
+      float along = smoothstep(r.x - 1.0, r.x + 22.0, w.z) * (1.0 - smoothstep(r.y - 22.0, r.y + 1.0, w.z));
+      float c = 23.0 + 2.2 * sin(s * 0.021 + r.z);
+      float hw = (9.6 + 1.2 * sin(s * 0.047 + 2.0)) * sqrt(along);
+      return 1.0 - smoothstep(hw - 1.4, hw, abs(w.x * r.z - c));
+    }
+    float kitRiver(vec3 w){ float s = uDistMod - w.z; return max(kitRiverSeg(w, uRiv0, s), kitRiverSeg(w, uRiv1, s)); }`;
   mats.ground = snowMat(1 / 12, 1 / 12, "kitGround", `
       {
         float side = smoothstep(5.2, 8.0, abs(kitW.x));
-        vRiver = kitZone(kitW.z, uBridge) * side;
-        transformed.y -= vRiver * 1.0;
+        float br = kitZone(kitW.z, uBridge) * side;
+        transformed.y -= br * 1.0 + kitRiver(kitW.xyz) * 0.3;
       }`, {
-    uniforms: { uBridge: U.uBridge, uIce: { value: lin(0x9ED8F6).multiplyScalar(0.55) }, uDistMod: U.uDistMod },
-    vPars: ZONE + "uniform vec2 uBridge; varying float vRiver;",
-    fPars: ZONE + "uniform vec3 uIce; uniform float uDistMod; varying float vRiver;",
+    uniforms: { uBridge: U.uBridge, uIce: { value: lin(0x9ED8F6).multiplyScalar(0.55) }, uDistMod: U.uDistMod, uRiv0: U.uRiv0, uRiv1: U.uRiv1 },
+    vPars: ZONE + "uniform vec2 uBridge; uniform float uDistMod; uniform vec4 uRiv0; uniform vec4 uRiv1;" + RIVER_GLSL,
+    fPars: ZONE + "uniform vec3 uIce; uniform float uDistMod; uniform vec2 uBridge; uniform vec4 uRiv0; uniform vec4 uRiv1; float vRiver;" + RIVER_GLSL,
     fColor: `
+      vRiver = max(kitZone(vKitW.z, uBridge) * smoothstep(5.2, 8.0, abs(vKitW.x)), kitRiver(vKitW));
       {
         float s = uDistMod - vKitW.z;
         float crack = smoothstep(0.985, 1.0, abs(sin(vKitW.x * 0.9 + s * 0.35 + sin(s * 0.13) * 2.0)));
@@ -255,9 +271,13 @@ export function createMats(ctx, U){
   mats.cardHouses = own(new THREE.MeshBasicMaterial({ map: own(cardTex("houses")), alphaTest: 0.5, color: 0xffffff }));
 
   // текстура вывески арки «ИДЕАЛИТИ»
-  mats.sign = own(new THREE.MeshStandardMaterial({ map: own(signTex("ИДЕАЛИТИ")), roughness: 0.75, emissive: 0xffffff, emissiveMap: null, emissiveIntensity: 0 }));
+  const signMap = own(signTex("ИДЕАЛИТИ"));
+  mats.sign = own(new THREE.MeshStandardMaterial({ map: signMap, roughness: 0.75, emissive: 0xffffff, emissiveMap: signMap, emissiveIntensity: 0.12 }));
+  // перерисовать вывеску настоящим Nunito, когда он загрузится (один раз, не в кадре)
+  loadKitFont().then(ok => { if (ok && !disposed){ drawSign(signMap.image.getContext("2d"), signMap.image.width, signMap.image.height, "ИДЕАЛИТИ"); signMap.needsUpdate = true; } });
 
-  mats.dispose = () => { for (const d of disposables) d.dispose(); };
+  let disposed = false;
+  mats.dispose = () => { disposed = true; for (const d of disposables) d.dispose(); };
   // текстуры, которые прокручиваются по z вместе с миром (uv.v всех полос — метры): offset.y = fract(dist · repeat.y)
   mats.scrollTextures = [trackMap, trackNormal];
   for (const m of [mats.bank, mats.ground]) for (const k of ["map", "normalMap", "emissiveMap"]) if (m[k]) mats.scrollTextures.push(m[k]);
@@ -387,15 +407,17 @@ function cardTex(kind){
   return t;
 }
 
+function drawSign(g, w, h, text){
+  g.clearRect(0, 0, w, h);
+  g.fillStyle = "#0536D4"; g.beginPath(); g.roundRect(8, 8, w - 16, h - 16, 64); g.fill();
+  g.strokeStyle = "#ffffff"; g.lineWidth = 14; g.beginPath(); g.roundRect(26, 26, w - 52, h - 52, 50); g.stroke();
+  g.fillStyle = "#ffffff"; g.textAlign = "center"; g.textBaseline = "middle";
+  g.font = "900 128px " + SIGN_FONT;
+  g.fillText(text, w / 2, h / 2 + 8);
+  // лаймовые звёздочки по краям — акцент бренда (над трассой, не в игровой полосе)
+  g.fillStyle = "#C0FF3F";
+  for (const x of [70, w - 70]){ g.beginPath(); for (let i = 0; i < 10; i++){ const a = i * Math.PI / 5 - Math.PI / 2, rr = i % 2 ? 14 : 34; g.lineTo(x + Math.cos(a) * rr, h / 2 + Math.sin(a) * rr); } g.fill(); }
+}
 function signTex(text){
-  return canvas(1024, 256, (g, w, h) => {
-    g.fillStyle = "#0536D4"; g.beginPath(); g.roundRect(8, 8, w - 16, h - 16, 64); g.fill();
-    g.strokeStyle = "#ffffff"; g.lineWidth = 14; g.beginPath(); g.roundRect(26, 26, w - 52, h - 52, 50); g.stroke();
-    g.fillStyle = "#ffffff"; g.textAlign = "center"; g.textBaseline = "middle";
-    g.font = "900 128px Nunito, 'Arial Rounded MT Bold', 'Avenir Next', system-ui, sans-serif";
-    g.fillText(text, w / 2, h / 2 + 8);
-    // лаймовые звёздочки по краям — акцент бренда (над трассой, не в игровой полосе)
-    g.fillStyle = "#C0FF3F";
-    for (const x of [70, w - 70]){ g.beginPath(); for (let i = 0; i < 10; i++){ const a = i * Math.PI / 5 - Math.PI / 2, rr = i % 2 ? 14 : 34; g.lineTo(x + Math.cos(a) * rr, h / 2 + Math.sin(a) * rr); } g.fill(); }
-  });
+  return canvas(1024, 256, (g, w, h) => drawSign(g, w, h, text));
 }

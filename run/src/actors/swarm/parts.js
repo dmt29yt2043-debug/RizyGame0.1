@@ -157,29 +157,40 @@ export function createMaterials(opts){
   wing.onBeforeCompile = sh => addRim(sh, U);
   wing.customProgramCacheKey = () => "swarm-wing";
 
-  // оболочки меха: слой = gl_InstanceID % uLayers, дрон = gl_InstanceID / uLayers.
+  // оболочки меха: слой = gl_InstanceID % uLayers; номер дрона — в instanceColor.r (кит сортирует дроны
+  // от дальнего к ближнему, и узор ворса не должен «перескакивать» вместе со слотом).
   // Ворс — 3D value-noise по направлению (без UV → ни швов, ни щипков на полюсах), порог растёт к кончикам.
-  const fur = felt(COL.body, { normalScale: new THREE.Vector2(0.35, 0.35) });
+  // Край ворсинки сглажен по fwidth и смешивается альфой (без MSAA в композере жёсткий discard давал «лесенку»).
+  const fur = felt(COL.body, { normalScale: new THREE.Vector2(0.35, 0.35), transparent: true, depthWrite: true });
   fur.onBeforeCompile = sh => {
     addRim(sh, U);
     sh.uniforms.uFurLen = U.uFurLen; sh.uniforms.uLayers = U.uLayers; sh.uniforms.uEyeDir = U.uEyeDir;
     sh.vertexShader = sh.vertexShader
-      .replace("#include <common>", "#include <common>\nuniform float uFurLen;\nuniform int uLayers;\nvarying vec3 vFurN;\nvarying float vFurL;\nvarying float vFurId;")
+      .replace("#include <common>", "#include <common>\nuniform float uFurLen;\nuniform int uLayers;\nvarying vec3 vFurN;\nvarying float vFurL;")
       .replace("#include <begin_vertex>", `#include <begin_vertex>
         float furL = (float(gl_InstanceID % uLayers) + 1.0) / float(uLayers);
-        vFurL = furL; vFurId = float(gl_InstanceID / uLayers);
+        vFurL = furL;
         vFurN = normalize(position);
         transformed += normalize(objectNormal) * uFurLen * furL;
         transformed.y -= uFurLen * 0.35 * furL * furL;     // кончики чуть свисают`);
     sh.fragmentShader = sh.fragmentShader
-      .replace("#include <common>", "#include <common>\nuniform vec3 uEyeDir;\nvarying vec3 vFurN;\nvarying float vFurL;\nvarying float vFurId;\n" + NOISE_GLSL)
-      .replace("#include <color_fragment>", `#include <color_fragment>
+      .replace("#include <common>", "#include <common>\nuniform vec3 uEyeDir;\nvarying vec3 vFurN;\nvarying float vFurL;\n" + NOISE_GLSL)
+      // свой color_fragment: vColor здесь не цвет, а номер дрона
+      .replace("#include <color_fragment>", `
         {
-          vec3 fp = vFurN * 11.0 + vec3(vFurId * 7.31, vFurId * 3.17, vFurId * 5.53);
+          float furId = floor(vColor.r * 64.0);
+          vec3 fp = vFurN * 11.0 + vec3(furId * 7.31, furId * 3.17, furId * 5.53);
           float n = swNoise(fp) * 0.62 + swNoise(fp * 2.9 + 4.1) * 0.38;
-          if (n < mix(0.3, 0.78, vFurL)) discard;
-          // гнездо глаза: ворс вокруг не лезет на глаз
-          if (dot(vFurN, uEyeDir) > 0.9 - 0.05 * (1.0 - vFurL)) discard;
+          float th = mix(0.3, 0.78, vFurL);
+          float w = clamp(fwidth(n) * 1.25, 0.012, 0.12);
+          float a = smoothstep(th - w, th + w, n);
+          // гнездо глаза: ворс вокруг не лезет на глаз (тоже мягко)
+          float ec = dot(vFurN, uEyeDir) - (0.9 - 0.05 * (1.0 - vFurL));
+          a *= 1.0 - smoothstep(-0.02, 0.02, ec);
+          // внешние слои чуть прозрачнее — кончики «пушатся», а не режутся
+          a *= mix(1.0, 0.75, vFurL * vFurL);
+          if (a < 0.04) discard;
+          diffuseColor.a *= a;
           // корни темнее (самозатенение), кончики светлее — объём «махры»
           diffuseColor.rgb *= mix(0.4, 1.05, vFurL);
         }`);
@@ -207,20 +218,25 @@ export function createMaterials(opts){
           vec3 c = uEyeCol * I * (0.35 + 0.9 * core);
           // белёсо-горячее кольцо вокруг зрачка → «раскалённый» глаз, но оттенок остаётся красным
           float ring = smoothstep(0.1, 0.2, abs(q.x - look * 0.4)) * (1.0 - smoothstep(0.2, 0.42, length(vec2(q.x - look * 0.4, q.y * 0.55))));
-          c += vec3(1.0, 0.06, 0.1) * ring * I * 0.3;       // без зелёного: ACES не уводит в оранжевый
+          c += vec3(1.0, 0.0, 0.03) * ring * I * 0.16;      // чистый красный и слабее: ACES + bloom не уводят в оранжевый
           // зрачок-щель
-          float px = (q.x - look * 0.4) / 0.13, py = q.y / 0.62;
+          // широко раскрытый глаз («попалась!»): зрачок сжимается в точку — длинная щель делила радужку на «сердечко»
+          float wide = smoothstep(0.8, 0.92, open);
+          float px = (q.x - look * 0.4) / mix(0.13, 0.17, wide), py = (q.y + 0.05 * wide) / mix(0.62, 0.2, wide);
           float pupil = 1.0 - smoothstep(0.85, 1.15, px * px + py * py);
           c = mix(c, vec3(0.03, 0.0, 0.005) * I, pupil * 0.95);
           // блик-искорка сверху слева (живой, «мультяшный» глаз)
-          float gl = 1.0 - smoothstep(0.08, 0.14, length(q.xy - vec2(-0.4, -0.02)));
-          c = mix(c, vec3(1.6, 1.3, 1.35), gl * 0.85);
-          // веко: хмурая дуга (в центре ниже), тёмный войлок; open 0 = закрыт
-          float lidY = mix(-1.05, 0.95, open) - 0.3 * (1.0 - q.x * q.x);
+          float gl = 1.0 - smoothstep(0.06, 0.11, length(q.xy - vec2(-0.4, -0.02)));
+          c = mix(c, vec3(1.5, 1.2, 1.25), gl * 0.7);
+          // веко: хмурая дуга «галочкой» (в центре ниже, к краям выше), тёмный войлок; open 0 = закрыт
+          // изгиб слабее у широко раскрытого глаза, иначе у «попалась!» дуга с щелью зрачка читается как сердечко
+          float lidY = mix(-1.05, 0.95, open) - mix(0.4, 0.18, smoothstep(0.6, 0.95, open)) * (1.0 - q.x * q.x);
           float lid = smoothstep(lidY - aa, lidY + aa, q.y);
-          // нижний край: край века чуть светлее (как фаска)
-          float edge = smoothstep(lidY - 0.02, lidY + 0.05, q.y) * (1.0 - smoothstep(lidY + 0.05, lidY + 0.16, q.y));
-          c = mix(c, uLidCol + vec3(0.02, 0.025, 0.07) * edge, lid);
+          // нижняя кромка века: тонкая тёмная тень на раскалённом глазе + еле заметная синяя фаска
+          float shade = smoothstep(lidY - 0.22, lidY, q.y) * (1.0 - lid);
+          c *= 1.0 - 0.55 * shade;
+          float edge = smoothstep(lidY - 0.02, lidY + 0.04, q.y) * (1.0 - smoothstep(lidY + 0.04, lidY + 0.12, q.y));
+          c = mix(c, uLidCol + vec3(0.01, 0.015, 0.05) * edge, lid);
           // задняя сторона сферы — просто тёмная (утоплена в мех)
           c = mix(c, uLidCol, smoothstep(0.1, -0.2, q.z));
           diffuseColor.rgb = c;

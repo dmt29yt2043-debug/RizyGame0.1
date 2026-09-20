@@ -5,18 +5,60 @@
 //
 // Состав (draw calls при q=med): мягкие частицы 1 + светящиеся частицы 1 + снег 1 + линии скорости 1 (только
 // при скорости > 20 / boost). Пустой пул прячется (visible=false) → в покое 1 вызов (снег).
-// Частицы живут на realDt (бибилия 2.0): хит-стоп их не замораживает.
+// Частицы живут на realDt (библия 2.0): хит-стоп их НЕ замораживает. Пауза и отсчёт 3-2-1 — замораживают,
+// но только через явный setPaused(true) от адаптера (main зовёт плагины каждый кадр, в том числе на паузе).
 // Эмиттеры и числа — feature-bible VFX-1..VFX-4 (см. EMITTERS ниже). Все формы круглые/мягкие.
+//
+// ---------------------------------------------------------------------------------------------------------
+// РЕЦЕПТ АДАПТЕРА src/plugins/vfx.js (ARCHITECTURE.md «События»; сигнатура плагина — update(realDt, ctx, simDt)):
+//
+//   const vfx = createVFX(ctx); ctx.scene.add(vfx.root);
+//   const O = vfx.opts();                       // один переиспользуемый объект опций, без аллокаций в кадре
+//   bus.on("land",     p => { O.reset(); O.impact = p.impact; O.dive = p.dive; vfx.emit("land", null, O); });
+//   bus.on("jump",     () => vfx.emit("takeoff"));
+//   bus.on("dive",     () => vfx.emit("dive"));
+//   bus.on("lane",     p => { O.reset(); O.dir = p.dir; vfx.emit("lane", null, O); });
+//   bus.on("edgebump", p => { O.reset(); O.dir = p.dir; vfx.emit("edgebump", null, O); });
+//   bus.on("pickup",   c => { O.reset(); O.big = G.mult >= 3; vfx.emit("pickup", c.object3d ? c.object3d.position : c, O); });
+//   bus.on("nearmiss", o => { O.reset(); O.side = sideOf(o); vfx.emit("nearmiss", null, O); });
+//   bus.on("hit",      () => vfx.emit("hit", HITPOS));         // HITPOS = {x: G.x, y: 1.0, z: -0.35}, переиспользуется
+//   bus.on("milestone",() => vfx.emit("milestone"));
+//   bus.on("landmark", () => vfx.emit("milestone"));           // ворота-рубеж и сет-пьесы world — тот же салют
+//   bus.on("record",   () => { vfx.emit("record"); vfx.celebrate("record"); });   // ПЕРЕСЕЧЕНИЕ рекорда В ЗАБЕГЕ
+//   bus.on("mission:complete", () => vfx.celebrate("mission"));
+//   bus.on("combo:tier", () => vfx.tierUp());
+//   bus.on("boost",    b => vfx.setBoost(b));
+//   bus.on("tunnel:enter", () => vfx.setSpeedLinesHidden(true));
+//   bus.on("tunnel:exit",  () => vfx.setSpeedLinesHidden(false));
+//   bus.on("pause",     b => vfx.setPaused(!!b));              // ОБЯЗАТЕЛЬНО: иначе конфетти летит над стоящим миром
+//   bus.on("countdown", () => vfx.setPaused(true));            // G.paused = true на весь отсчёт 3-2-1
+//   bus.on("resume",    () => vfx.setPaused(false));
+//   bus.on("start",     () => { vfx.setPaused(false); vfx.clear(); });
+//   bus.on("gameover",  () => vfx.setPaused(false));           // на результатах конфетти должно жить
+//   bus.on("settings",  s => vfx.setReducedMotion(!!s.reducedMotion));
+//   update(realDt, ctx){                                        // arg 0 — УЖЕ realDt (ARCHITECTURE.md § Контракт плагина)
+//     vfx.setIntensity(G.intensity);
+//     if (G.sliding > 0 && G.dz > 0){ O.reset(); O.dt = realDt; vfx.emit("slide", null, O); }
+//     else if (G.py <= 0.01 && G.dz > 0) стопы по фазе G.runPhase → vfx.emit("footL"/"footR", ...);
+//     vfx.update(realDt);                                       // конфетти шагает отсюда же (private rAF выключен)
+//   }
+// Про `record`: main.js шлёт его ОДИН раз в забеге при G.dist >= G.best (cfg.recordMin). Салют на `gameover`+isBest
+// — это ДРУГОЙ момент; можно делать оба, но именно пересечение рекорда в забеге праздновать обязательно.
+// ---------------------------------------------------------------------------------------------------------
 import * as THREE from "three";
 import { createAtlas } from "./atlas.js";
 import { createPool, TYPE, FLAG } from "./pool.js";
 import { createSnow } from "./snow.js";
 import { createSpeedLines } from "./speedlines.js";
+import { createConfetti } from "./confetti.js";
 
+// пул = soft + glow ≥ 512 (VFX-1); облачков-конфетти ≤ 600 живых (кольцевой буфер сам держит лимит)
+// lineCols — плотность колонн тоннеля (единственный параметр VFX-3, который меняется качеством на лету);
+// lineSegs — тесселяция цилиндра, печётся при создании
 const QUALITY = {
-  low:  { soft: 384,  glow: 192, snow: 400,  lineSegs: 48, burst: 0.6 },
-  med:  { soft: 768,  glow: 384, snow: 900,  lineSegs: 64, burst: 1.0 },
-  high: { soft: 1024, glow: 512, snow: 1500, lineSegs: 64, burst: 1.0 },
+  low:  { soft: 384, glow: 192, snow: 400,  lineSegs: 48, lineCols: 64,  burst: 0.6 },
+  med:  { soft: 600, glow: 320, snow: 900,  lineSegs: 64, lineCols: 96,  burst: 1.0 },
+  high: { soft: 600, glow: 400, snow: 1500, lineSegs: 64, lineCols: 128, burst: 1.0 },
 };
 const RM_MUL = 0.3;             // reduced motion: частиц −70%
 const RM_SNOW = 0.5;            // окружающий снег при reduced motion — вдвое реже и без вытягивания
@@ -25,6 +67,11 @@ const RM_SNOW = 0.5;            // окружающий снег при reduced 
 const ID = { footL: 0, footR: 1, step: 2, takeoff: 3, land: 4, dive: 5, slide: 6, lane: 7, edgebump: 8,
   pickup: 9, magnet: 10, nearmiss: 11, hit: 12, milestone: 13, record: 14 };
 export const EMITTERS = Object.keys(ID);
+// У СВОЕГО под-всплеска — свой слот переноса дроби. Иначе остаток от «16 клочков» съедала бы следующая
+// строка того же эмиттера («12 звёзд»), и перенастройка одного числа тихо сдвигала бы соседнее
+// (заметно при reduced motion, где 16×0.3 = 4.8).
+const SUB = { hitStars: 15, hitFeet: 16, nmPuff: 17, msStars: 18, recR: 19, recL2: 20, recR2: 21 };
+const CARRY_N = EMITTERS.length + 7;
 
 const EMPTY = Object.freeze({});
 const TAU = Math.PI * 2;
@@ -34,8 +81,8 @@ const damp = (a, b, l, dt) => a + (b - a) * (1 - Math.exp(-l * dt));
 
 export function createVFX(ctx, options){
   const o0 = options || EMPTY;
-  const Qname = ctx.quality === "low" || ctx.quality === "high" ? ctx.quality : "med";
-  const Q = QUALITY[Qname];
+  let Qname = ctx.quality === "low" || ctx.quality === "high" ? ctx.quality : "med";
+  let Q = QUALITY[Qname];
   const G = ctx.G || null;
   const camera = ctx.camera;
 
@@ -45,8 +92,10 @@ export function createVFX(ctx, options){
   const atlas = createAtlas();
   const soft = createPool({ name: "soft", capacity: o0.softCapacity || Q.soft, atlas, renderOrder: 20 });
   const glow = createPool({ name: "glow", capacity: o0.glowCapacity || Q.glow, atlas, renderOrder: 21 });
-  const snow = createSnow({ count: Q.snow, renderOrder: 19 });
-  const lines = createSpeedLines({ segments: Q.lineSegs });
+  // буфер снега создаётся на максимум (high), качество режет instanceCount — setQuality без пересоздания
+  const snow = createSnow({ count: QUALITY.high.snow, renderOrder: 19 });
+  let confetti = null;                                    // DOM-конфетти создаётся лениво при первом celebrate()
+  const lines = createSpeedLines({ segments: Q.lineSegs, columns: Q.lineCols });
   root.add(snow.mesh, soft.mesh, glow.mesh, lines.mesh);
 
   // палитра (линейные цвета; ×k ниже — HDR для bloom по максимальному каналу, порог ≈ 1.15)
@@ -62,11 +111,25 @@ export function createVFX(ctx, options){
   let now = 0, I = 0, reduced = !!o0.reducedMotion, hiddenLines = false;
   let boost = false, boostK = 0, tierT = 0, lineK = 0, stretchK = 0;
   let scroll = 0, lastDist = null;
-  let manualTarget = false;
-  const carry = new Float32Array(EMITTERS.length);
+  let manualTarget = false, paused = false, camValid = false;
+  const carry = new Float32Array(CARRY_N);
   const target = soft.uniforms.uTarget.value;           // общий Vector3 для обоих пулов
   glow.uniforms.uTarget.value = target;
   const camPos = new THREE.Vector3(), camQuat = new THREE.Quaternion(), ONE = new THREE.Vector3(1, 1, 1);
+
+  // Якорь «к камере»: точку подбора/удара сдвигаем на push метров ПО ЛУЧУ к камере и на lift вверх.
+  // Игровая камера стоит за спиной (0 / 3.8 / 6.4, ARCHITECTURE.md CAM-1) — без сдвига взрыв рисуется
+  // ВНУТРИ силуэта Ризи и читается как ободок на свитере, а не как всплеск. Вертикальную составляющую луча
+  // берём с коэффициентом 0.3, чтобы эффект не сползал к высоте камеры. Без аллокаций: один общий вектор.
+  const AN = new THREE.Vector3();
+  function toCam(x, y, z, push, lift){
+    AN.set(x, y + (lift || 0), z);
+    const ax = camPos.x - AN.x, ay = camPos.y - AN.y, az = camPos.z - AN.z;
+    const l = camValid ? Math.sqrt(ax * ax + ay * ay + az * az) : 0;
+    if (l > 0.001){ const k = push / l; AN.x += ax * k; AN.y += ay * k * 0.3; AN.z += az * k; }
+    else AN.z += push;                                  // камеры ещё нет (эмиссия до первого update) — просто к зрителю
+    return AN;
+  }
 
   // скорость мира для «пинка» частиц назад: opts.speed → G.speed → из I
   const speedOf = o => o.speed != null ? o.speed : (G && G.speed > 0 ? G.speed : 12 + 18 * I);
@@ -110,7 +173,7 @@ export function createVFX(ctx, options){
     for (let i = 0; i < n; i++){
       const P = puff(x + side * 0.04 + rnd(-0.06, 0.06), y + 0.05, z + rnd(-0.06, 0.06), T0);
       P.vx = rnd(-0.6, 0.6) * 0.6 + side * 0.25; P.vy = 0.9 * rnd(0.8, 1.2); P.vz = sp * 0.15 * rnd(0.85, 1.15);
-      P.drag = 2.2; P.life = 0.3 * rnd(0.9, 1.15); P.s0 = 0.2; P.s1 = 0.45; P.a = 0.85;
+      P.drag = 2.2; P.life = 0.3 * rnd(0.9, 1.15); P.s0 = 0.2; P.s1 = 0.55; P.a = 0.95;
       soft.push();
     }
     return n;
@@ -122,7 +185,7 @@ export function createVFX(ctx, options){
       const a = (i / Math.max(1, n)) * TAU + rnd(-0.3, 0.3), h = rnd(0.8, 1.4);
       const P = puff(x + Math.cos(a) * 0.12, y + 0.05, z + Math.sin(a) * 0.12, T0);
       P.vx = Math.cos(a) * h; P.vy = rnd(0.3, 0.8); P.vz = Math.sin(a) * h * 0.6 + sp * 0.15;
-      P.drag = 3; P.life = 0.35 * rnd(0.9, 1.1); P.s0 = 0.25; P.s1 = 0.6; P.a = 0.85;
+      P.drag = 3; P.life = 0.35 * rnd(0.9, 1.1); P.s0 = 0.25; P.s1 = 0.72; P.a = 0.95;
       soft.push();
     }
     return n;
@@ -151,30 +214,36 @@ export function createVFX(ctx, options){
     }
     return n + 1;
   }
-  // подкат: 28/с, конус 35° назад-вверх, 0.18→0.5, 380 мс, 20% звёзд. opts.dt — длительность кадра
-  const COS35 = Math.cos(35 * Math.PI / 180), AY = Math.sin(24 * Math.PI / 180), AZ = Math.cos(24 * Math.PI / 180);
+  // ПОДКАТ: 58/с (было 28 — при 0.42 с жизни в кадре жило ~3 частицы и «две лыжные волны» не собирались),
+  // конус 35° вокруг оси, задранной на 34° назад-вверх, 0.30→1.05, 420 мс, 18% звёзд. opts.dt — длительность кадра
+  const COS35 = Math.cos(35 * Math.PI / 180), AY = Math.sin(34 * Math.PI / 180), AZ = Math.cos(34 * Math.PI / 180);
+  let slideSide = 1;                 // сквозное чередование сторон между кадрами (см. ниже)
   function eSlide(x, y, z, o, T0){
     const dt = o.dt != null ? o.dt : 1 / 60;
-    const n = countOf(ID.slide, 28 * dt), sp = speedOf(o);
+    const n = countOf(ID.slide, 58 * dt), sp = speedOf(o);
     for (let i = 0; i < n; i++){
       // направление в конусе вокруг оси (0, AY, AZ)
       const ct = 1 - Math.random() * (1 - COS35), stt = Math.sqrt(1 - ct * ct), ph = Math.random() * TAU;
       const px = Math.cos(ph) * stt, pq = Math.sin(ph) * stt;
       const ddx = px, ddy = AY * ct + AZ * pq, ddz = AZ * ct - AY * pq;
-      const v = rnd(2.2, 4.0);
-      if (Math.random() < 0.2){
-        const P = star(x + rnd(-0.25, 0.25), y + 0.08, z + rnd(-0.05, 0.2), T0);
+      const v = rnd(2.6, 4.6);
+      if (Math.random() < 0.18){
+        const P = star(x + rnd(-0.3, 0.3), y + 0.08, z + rnd(-0.05, 0.2), T0);
         P.type = Math.random() < 0.5 ? TYPE.STAR : TYPE.FLAKE;
         P.vx = ddx * v; P.vy = ddy * v; P.vz = ddz * v + sp * 0.15;
-        P.drag = 3; P.life = 0.38 * rnd(0.8, 1.1); P.s0 = 0.16; P.s1 = 0.02; P.a = 1;
+        P.drag = 3; P.life = 0.38 * rnd(0.8, 1.1); P.s0 = 0.2; P.s1 = 0.02; P.a = 1;
         setCol(P, C.ice, 1.7);
         glow.push();
       } else {
-        // два «буруна» по бокам ступней (как лыжи), а не один комок по центру
-        const side = i % 2 ? 1 : -1;
-        const P = puff(x + side * rnd(0.16, 0.3), y + 0.05, z + rnd(-0.05, 0.2), T0);
-        P.vx = ddx * v + side * 0.5; P.vy = ddy * v; P.vz = ddz * v + sp * 0.15;
-        P.drag = 2.5; P.life = 0.38 * rnd(0.85, 1.1); P.s0 = 0.2; P.s1 = 0.62; P.a = 0.92;
+        // Два «буруна» по бокам ступней (как лыжи), а не один комок по центру: стороны разведены на
+        // 0.26–0.44 м и дополнительно расходятся скоростью — с 6.4 м пара читается как пара.
+        // Сторона чередуется СКВОЗНЫМ счётчиком, а не i % 2: подкат сыплет ~0.8 частицы за кадр,
+        // поэтому i почти всегда 0 — прежний i % 2 отправлял ВСЕ буруны влево (отсюда «один смазок»).
+        slideSide = -slideSide;
+        const side = slideSide;
+        const P = puff(x + side * rnd(0.26, 0.44), y + 0.05, z + rnd(-0.05, 0.2), T0);
+        P.vx = ddx * v * 0.7 + side * 1.35; P.vy = ddy * v; P.vz = ddz * v + sp * 0.15;
+        P.drag = 2.5; P.life = 0.42 * rnd(0.85, 1.1); P.s0 = 0.3; P.s1 = 1.05; P.a = 0.95;
         soft.push();
       }
     }
@@ -186,7 +255,7 @@ export function createVFX(ctx, options){
     for (let i = 0; i < n; i++){
       const P = puff(x - dir * 0.22 + rnd(-0.05, 0.05), y + 0.05, z + rnd(-0.1, 0.1), T0);
       P.vx = -dir * rnd(0.6, 1.4); P.vy = rnd(0.4, 0.9); P.vz = sp * 0.15 * rnd(0.8, 1.2);
-      P.drag = 2.6; P.life = 0.3 * rnd(0.9, 1.15); P.s0 = 0.2; P.s1 = 0.5; P.a = 0.8;
+      P.drag = 2.6; P.life = 0.3 * rnd(0.9, 1.15); P.s0 = 0.2; P.s1 = 0.62; P.a = 0.92;
       soft.push();
     }
     return n;
@@ -208,55 +277,76 @@ export function createVFX(ctx, options){
     }
     return n;
   }
-  // подбор энергона: 7 звёзд (60% лайм, 40% белые) 2.2–4.0 м/с, drag 5, 0.28→0, 320 мс;
-  // кольцо-billboard 0.2→1.3 м за 220 мс easeOutCubic, 0.9→0; вспышка ядра. big (каждый 10-й): 12 звёзд, кольцо 1.8
-  // якорь сдвинут к камере (+0.45 z, +0.2 y): со спины грудь Ризи закрыта телом; opts.raw — без сдвига
+  // ПОДБОР ЭНЕРГОНА (VFX-2, P0 — самая частая награда в игре). Числа выставлены по кадрам ИГРОВОЙ камеры
+  // (fov 60+8·I, позиция 0 / 3.8 / 6.4) и портрета 390×844, а не по близкому «витринному» ракурсу:
+  //   якорь          — toCam(push 1.1, lift 0.15): всплеск выходит ВПЕРЁД силуэта, а не рисуется сквозь свитер;
+  //   вспышка ядра   — диск 0.4 → 1.5 м (big 2.2), 120 мс;
+  //   кольцо         — 0.45 → 1.9 м (big 2.8) за 240 мс easeOutCubic: радиус 0.95 м против полуширины Ризи 0.45 м;
+  //   вторая волна   — белый ореол 0.6 → 2.9 м (big 4.0) с задержкой 50 мс, alpha 0.35 — «двойной поп»;
+  //   10 звёзд (big 16), 5–9 м/с, drag 3.5 — за 100 мс улетают на ~0.6 м, то есть уже вне силуэта.
+  // opts.raw — не двигать якорь (для тестов и для эффектов, привязанных к точке мира).
   function ePickup(x, y, z, o, T0){
-    if (!o.raw){ y += 0.2; z += 0.45; }
+    if (!o.raw){ const A = toCam(x, y, z, 1.1, 0.15); x = A.x; y = A.y; z = A.z; }
     const big = !!o.big;
-    const n = countOf(ID.pickup, big ? 12 : 7, true);
+    const n = countOf(ID.pickup, big ? 16 : 10, true);
     for (let i = 0; i < n; i++){
       sphereDir();
-      const v = rnd(2.2, 4.0) * (big ? 1.15 : 1);
+      const v = rnd(5, 9) * (big ? 1.15 : 1);
       const P = star(x, y, z, T0);
-      P.vx = dx * v; P.vy = dy * v * 0.8 + 0.6; P.vz = dz * v;
-      P.drag = 5; P.life = 0.32 * rnd(0.9, 1.1); P.s0 = 0.28 * (big ? 1.2 : 1); P.s1 = 0; P.a = 1;
-      if (i / Math.max(1, n) < 0.6) setCol(P, C.lime, 2.4); else setCol(P, C.white, 1.9);
+      P.vx = dx * v; P.vy = dy * v * 0.8 + 0.9; P.vz = dz * v;
+      P.drag = 3.5; P.life = 0.34 * rnd(0.9, 1.1); P.s0 = 0.42 * (big ? 1.25 : 1); P.s1 = 0; P.a = 1;
+      if (i / Math.max(1, n) < 0.6) setCol(P, C.lime, 2.0); else setCol(P, C.white, 1.7);
       P.flags = FLAG.NO_GROUND;
       glow.push();
     }
     let P = glow.reset();
     P.x = x; P.y = y; P.z = z; P.birth = T0;
-    P.type = TYPE.RING; P.add = 1; P.flags = FLAG.EASE_OUT | FLAG.NO_GROUND;
-    P.life = 0.22; P.s0 = 0.2; P.s1 = big ? 1.8 : 1.3; P.a = 0.9;
-    setCol(P, C.lime, 1.9);
+    P.type = TYPE.DISK; P.add = 1; P.flags = FLAG.EASE_OUT | FLAG.NO_GROUND;
+    P.life = 0.12; P.s0 = 0.4; P.s1 = big ? 2.2 : 1.5; P.a = 0.75;
+    setCol(P, C.flashLime, 2.0);
     glow.push();
     P = glow.reset();
     P.x = x; P.y = y; P.z = z; P.birth = T0;
-    P.type = TYPE.DISK; P.add = 1; P.flags = FLAG.EASE_OUT | FLAG.NO_GROUND;
-    P.life = 0.1; P.s0 = 0.2; P.s1 = big ? 0.9 : 0.62; P.a = 0.55;
-    setCol(P, C.flashLime, 2.0);
+    P.type = TYPE.RING; P.add = 1; P.flags = FLAG.EASE_OUT | FLAG.NO_GROUND;
+    P.life = 0.24; P.s0 = 0.45; P.s1 = big ? 2.8 : 1.9; P.a = 0.9;
+    setCol(P, C.lime, 1.55);
     glow.push();
-    return n + 2;
+    P = glow.reset();
+    P.x = x; P.y = y; P.z = z; P.birth = T0 + 0.05;
+    P.type = TYPE.RING; P.add = 0.8; P.flags = FLAG.EASE_OUT | FLAG.NO_GROUND;
+    P.life = 0.3; P.s0 = 0.6; P.s1 = big ? 4.0 : 2.9; P.a = 0.35;
+    setCol(P, C.white, 1.3);
+    glow.push();
+    return n + 3;
   }
-  // магнитный шлейф: искры и мягкие лаймовые капли от энергона к груди Ризи (uTarget), easeInQuad, лесенкой по 15 мс
+  // МАГНИТНЫЙ ШЛЕЙФ энергона к груди Ризи (uTarget), easeInQuad, лесенкой по 18 мс.
+  // Тоже перетюнен под игровую камеру: дуга уводится ЦЕЛИКОМ В ОДНУ СТОРОНУ от тела (знак дуги — в seed,
+  // сам размах 2.2 м в шейдере pool.js), размеры вдвое больше прежних, жизнь длиннее — шлейф читается
+  // как лента сбоку от силуэта, а не как пара пикселей на рюкзаке.
+  // opts.side (−1|1) — с какой стороны обходить; по умолчанию сторона, с которой энергон подлетает.
   function eMagnet(x, y, z, o, T0){
     if (o.target){ target.set(o.target.x, o.target.y, o.target.z); manualTarget = true; }
-    const n = countOf(ID.magnet, 6, true);
+    // сторона обхода: явная, иначе «наружу» от цели (энергон слева — дуга влево)
+    const s = o.side != null && o.side !== 0 ? (o.side < 0 ? -1 : 1) : (x - target.x >= 0 ? 1 : -1);
+    const seedOf = () => s > 0 ? rnd(0.78, 1.0) : rnd(0.0, 0.22);
+    const n = countOf(ID.magnet, 11, true);
     for (let i = 0; i < n; i++){
-      const P = star(x + rnd(-0.12, 0.12), y + rnd(-0.12, 0.12), z + rnd(-0.08, 0.08), T0 + i * 0.016);
-      P.vx = rnd(-1.6, 1.6); P.vy = rnd(0.4, 1.8); P.vz = rnd(0.2, 1.2);
-      P.drag = 4; P.grav = 0; P.life = rnd(0.18, 0.26); P.s0 = 0.24; P.s1 = 0.08; P.a = 1;
-      P.flags = FLAG.HOMING | FLAG.NO_GROUND; setCol(P, i % 3 === 2 ? C.white : C.lime, 2.2);
+      const P = star(x + rnd(-0.14, 0.14), y + rnd(-0.14, 0.14), z + rnd(-0.1, 0.1), T0 + i * 0.018);
+      P.vx = rnd(-1.6, 1.6) + s * 1.4; P.vy = rnd(0.6, 2.2); P.vz = rnd(0.2, 1.4);
+      P.drag = 4; P.grav = 0; P.life = rnd(0.34, 0.48); P.s0 = 0.46; P.s1 = 0.14; P.a = 1;
+      // LATE_FADE: иначе частица гаснет ровно там, где easeInQuad наконец доносит её до груди, и лента
+      // «обрывается» на полпути — видно только облако у энергона
+      P.flags = FLAG.HOMING | FLAG.NO_GROUND | FLAG.LATE_FADE; P.seed = seedOf();
+      setCol(P, i % 3 === 2 ? C.white : C.lime, 2.4);
       glow.push();
     }
-    const m = reduced ? 1 : 4;
+    const m = reduced ? 2 : 6;
     for (let i = 0; i < m; i++){
       const P = glow.reset();
-      P.x = x; P.y = y; P.z = z; P.birth = T0 + i * 0.022;
-      P.type = TYPE.DISK; P.add = 0.85; P.flags = FLAG.HOMING | FLAG.NO_GROUND;
-      P.life = 0.14 + i * 0.02; P.s0 = 0.38 - i * 0.05; P.s1 = 0.1; P.a = 0.55;
-      setCol(P, C.lime, 1.6);
+      P.x = x; P.y = y; P.z = z; P.birth = T0 + i * 0.026;
+      P.type = TYPE.DISK; P.add = 0.85; P.flags = FLAG.HOMING | FLAG.NO_GROUND | FLAG.LATE_FADE;
+      P.life = 0.34 + i * 0.035; P.s0 = 0.85 - i * 0.09; P.s1 = 0.16; P.a = 0.9; P.seed = seedOf();
+      setCol(P, C.lime, 1.7);
       glow.push();
     }
     return n + m;
@@ -275,7 +365,7 @@ export function createVFX(ctx, options){
       P.flags = FLAG.NO_GROUND; setCol(P, C.ice, 1.35);
       glow.push();
     }
-    const m = countOf(ID.nearmiss, 4);
+    const m = countOf(SUB.nmPuff, 4);
     for (let i = 0; i < m; i++){
       const sx = side === 0 ? (i % 2 ? 1 : -1) : side;
       const P = puff(x + sx * rnd(0.4, 0.8), y + rnd(0.2, 1.2), z + rnd(-0.6, 0.2), T0);
@@ -287,7 +377,7 @@ export function createVFX(ctx, options){
   }
   // удар: розово-красный взрыв — вспышка, кольцо, войлочные клочки, звёзды, снег у ног
   function eHit(x, y, z, o, T0){
-    if (!o.raw) z += 0.45;              // тот же сдвиг к камере, что у подбора
+    if (!o.raw){ const A = toCam(x, y, z, 0.8, 0); x = A.x; y = A.y; z = A.z; }   // к камере, как у подбора
     let P = glow.reset();
     P.x = x; P.y = y; P.z = z + 0.1; P.birth = T0;
     P.type = TYPE.DISK; P.add = 0.6; P.flags = FLAG.EASE_OUT | FLAG.NO_GROUND;
@@ -308,7 +398,7 @@ export function createVFX(ctx, options){
       setCol(Q2, i % 3 === 0 ? C.hazard : i % 3 === 1 ? C.pink : C.blush, 1);
       soft.push();
     }
-    const m = countOf(ID.hit, 12, true);
+    const m = countOf(SUB.hitStars, 12, true);
     for (let i = 0; i < m; i++){
       sphereDir();
       const v = rnd(3, 6);
@@ -318,7 +408,7 @@ export function createVFX(ctx, options){
       if (i % 2) setCol(S, C.pink, 2.0); else setCol(S, C.white, 1.8);
       glow.push();
     }
-    const k = countOf(ID.hit, 6);
+    const k = countOf(SUB.hitFeet, 6);
     for (let i = 0; i < k; i++){
       const a = (i / Math.max(1, k)) * TAU;
       const F = puff(x + Math.cos(a) * 0.2, 0.06, z + Math.sin(a) * 0.2, T0);
@@ -347,7 +437,7 @@ export function createVFX(ctx, options){
       P.drag = 1.6; P.grav = -5.5; P.life = rnd(1.5, 2.1);
       soft.push();
     }
-    const m = countOf(ID.milestone, 10, true);
+    const m = countOf(SUB.msStars, 10, true);
     for (let i = 0; i < m; i++){
       sphereDir();
       const S = star(x + dx * 0.3, y + 1.9, z + dz * 0.3, T0);
@@ -362,9 +452,10 @@ export function createVFX(ctx, options){
     glow.push();
     return n + m + 1;
   }
-  // новый рекорд: две пушки из нижних углов, вторая волна по 50 через 350 мс
-  function cannon(side, x, z, cnt, T0){
-    const n = countOf(ID.record, cnt, true);
+  // новый рекорд: две пушки из нижних углов, вторая волна по 50 через 350 мс.
+  // cid — свой слот переноса дроби на каждую пушку и каждую волну (см. SUB)
+  function cannon(side, x, z, cnt, T0, cid){
+    const n = countOf(cid, cnt, true);
     const ox = x + side * 3.2, oy = 0.4, oz = z + 1.1;
     for (let i = 0; i < n; i++){
       const P = confetto(ox + rnd(-0.15, 0.15), oy + rnd(-0.1, 0.1), oz + rnd(-0.15, 0.15), T0 + rnd(0, 0.05), i);
@@ -383,14 +474,17 @@ export function createVFX(ctx, options){
     return n + m;
   }
   function eRecord(x, y, z, o, T0){
-    let n = cannon(-1, x, z, 90, T0) + cannon(1, x, z, 90, T0);
-    n += cannon(-1, x, z, 50, T0 + 0.35) + cannon(1, x, z, 50, T0 + 0.35);
+    let n = cannon(-1, x, z, 90, T0, ID.record) + cannon(1, x, z, 90, T0, SUB.recR);
+    n += cannon(-1, x, z, 50, T0 + 0.35, SUB.recL2) + cannon(1, x, z, 50, T0 + 0.35, SUB.recR2);
     return n;
   }
 
   // ---------- API ----------
   // emit(name, pos?, opts?) → сколько частиц выпущено. pos: {x,y,z} (Vector3 подходит); без pos — ноги Ризи из G.
-  // opts (все необязательны): delay (с), speed, side (−1|0|1), dir (−1|1), impact (0..1), big, dt, target {x,y,z}
+  // opts (все необязательны): delay (с), speed, side (−1|0|1), dir (−1|1), impact (0..1), big, dive, dt,
+  //                           raw (не двигать якорь к камере), target {x,y,z}
+  // ВНИМАНИЕ: объект opts читается как есть и НЕ копируется (ноль аллокаций в кадре) — поля «залипают»,
+  // если переиспользовать один объект и не сбросить его. Используйте vfx.opts(): O.reset() перед каждым emit.
   function emit(name, pos, opts){
     const o = opts || EMPTY;
     let x = 0, y = 0, z = 0;
@@ -417,12 +511,64 @@ export function createVFX(ctx, options){
     return 0;
   }
 
+  // переиспользуемый контейнер опций для адаптера: O.reset() гасит ВСЕ поля, которые читает emit(),
+  // поэтому забытый big/delay/dive с прошлого кадра невозможен. Аллокация одна — на создании адаптера.
+  function makeOpts(){
+    const O = {
+      delay: 0, speed: null, side: null, dir: 0, impact: null, big: false, dive: false, dt: null,
+      raw: false, target: null,
+      reset(){
+        O.delay = 0; O.speed = null; O.side = null; O.dir = 0; O.impact = null;
+        O.big = false; O.dive = false; O.dt = null; O.raw = false; O.target = null;
+        return O;
+      },
+    };
+    return O;
+  }
+
   function setIntensity(v){ I = clamp01(+v || 0); }
+  let snowOff = false;
+  function applySnow(){ snow.setCount(snowOff ? 0 : Math.round(Q.snow * (reduced ? RM_SNOW : 1))); }
   function setReducedMotion(b){
     reduced = !!b;
-    snow.setCount(Math.round(snow.count * (reduced ? RM_SNOW : 1)));
+    applySnow();
+    if (confetti) confetti.setReducedMotion(reduced);
   }
-  // куда летит магнитный шлейф; без вызова цель = грудь Ризи из G (x, py + 1.3, +0.45); setTarget(null) — вернуть авто
+  // Смена качества на лету: плотность снега, множитель всплесков и плотность колонн тоннеля.
+  // Ёмкость пулов и тесселяция цилиндра тоннеля остаются с создания (пересоздавать буферы на лету не будем).
+  function setQuality(q){
+    Qname = q === "low" || q === "high" ? q : "med"; Q = QUALITY[Qname];
+    lines.setColumns(Q.lineCols);
+    applySnow();
+  }
+  // ПАУЗА / ОТСЧЁТ 3-2-1: main зовёт update() плагинов каждый кадр, даже когда мир стоит (main.js: геймплей
+  // под `!G.paused`, а плагины — без условия). Без этого вызова конфетти летело бы над замершей сценой,
+  // а линии скорости продолжали бы нестись. Хит-стоп сюда НЕ относится: он замораживает simDt, а частицы
+  // живут на realDt и должны продолжать лететь.
+  function setPaused(b){
+    const v = !!b;
+    if (v === paused) return;
+    paused = v;
+    if (paused){                       // тоннель гасим мгновенно, а не через damp: мир уже стоит
+      lineK = 0; boostK = 0;
+      lines.uniforms.uIntensity.value = 0;
+      lines.mesh.visible = false;
+    }
+  }
+  function setSnowEnabled(b){ snowOff = !b; applySnow(); }
+  // DOM-конфетти VFX-4: "mission" | "record" | объект/массив опций canvas-confetti.
+  // По умолчанию конфетти шагает из vfx.update(realDt) — единственным владельцем порядка шага остаётся main
+  // (ARCHITECTURE.md), и ctx.simulating/фоторежим его не обходят. options.confettiAuto: true — включить
+  // собственный requestAnimationFrame (для отдельных страниц-стендов без игрового цикла).
+  function celebrate(kind){
+    if (typeof document === "undefined") return 0;
+    if (!confetti) confetti = createConfetti({ reducedMotion: reduced, zIndex: o0.confettiZ, auto: !!o0.confettiAuto });
+    if (kind === "mission") return confetti.mission();
+    if (kind === "record") return confetti.record();
+    return confetti.fire(kind);
+  }
+  // Куда летит магнитный шлейф. Без вызова цель = грудь Ризи из G — (G.x, G.py + 1.25, 0), сдвинутая
+  // на 0.5 м по лучу к камере (toCam), чтобы шлейф заканчивался перед силуэтом. setTarget(null) — вернуть авто.
   function setTarget(x, y, z){
     if (x === null){ manualTarget = false; return; }
     target.set(x, y, z); manualTarget = true;
@@ -432,16 +578,21 @@ export function createVFX(ctx, options){
   function setSpeedLinesHidden(b){ hiddenLines = !!b; }   // тоннели
 
   function update(realDt){
-    const dt = realDt > 0 ? Math.min(realDt, 0.25) : 0;
+    // на паузе/отсчёте время кита стоит: now не растёт → частицы, снег и конфетти замирают ровно в той позе,
+    // в которой их застала пауза. Позицию камеры продолжаем читать (бокс снега не должен «отстать» от облёта).
+    const dt = paused ? 0 : (realDt > 0 ? Math.min(realDt, 0.25) : 0);
     now += dt;
     soft.setTime(now); glow.setTime(now);
     const speed = G && G.speed > 0 ? G.speed : 12 + 18 * I;
 
-    // грудь Ризи, чуть к камере (+0.45 z, +0.2 y): со спины шлейф не прячется за телом
-    if (!manualTarget && G){ target.set(G.x || 0, (G.py || 0) + 1.3, 0.45); }
+    // грудь Ризи, сдвинутая к камере: со спины шлейф не прячется за телом (см. toCam)
+    if (camera){ camera.getWorldPosition(camPos); camValid = true; }
+    if (!manualTarget && G){
+      const A = toCam(G.x || 0, (G.py || 0) + 1.25, 0, 0.5, 0);
+      target.set(A.x, A.y, A.z);
+    }
 
     // снег: камера, прокрутка мира (+z) по G.dist либо интегралом скорости
-    if (camera){ camera.getWorldPosition(camPos); }
     const su = snow.uniforms;
     su.uTime.value = now;
     if (G && typeof G.dist === "number"){
@@ -456,43 +607,54 @@ export function createVFX(ctx, options){
     stretchK = damp(stretchK, reduced ? 0 : clamp01((speed - 19) / 3), 6, dt);
     su.uStretch.value = stretchK;
 
-    // линии скорости: 0 до 20 → 0.25 на 30; boost +0.3 (вход 150 мс, выход 400 мс); tier-up +0.1 на 400 мс
+    // Линии скорости: 0 до 20 → 0.45 на 30 (библия 0.25 и прежние 0.32 на ярком снегу давали < 1% изменённых
+    // пикселей — эффект «есть в коде, но не на экране»); boost +0.35 (вход 150 мс, выход 400 мс);
+    // tier-up +0.12 на 400 мс. Покрытие на максимуме меряется стендом TEST.coverage().
     boostK = damp(boostK, boost ? 1 : 0, boost ? 20 : 7.5, dt);
     if (tierT > 0) tierT = Math.max(0, tierT - dt);
-    const targetK = (reduced || hiddenLines) ? 0 : clamp01((speed - 20) / 10) * 0.25 + boostK * 0.3 + (tierT > 0 ? 0.1 : 0);
+    const targetK = (reduced || hiddenLines || paused) ? 0
+      : clamp01((speed - 20) / 10) * 0.45 + boostK * 0.35 + (tierT > 0 ? 0.12 : 0);
     lineK = damp(lineK, targetK, 10, dt);
     const lu = lines.uniforms;
     lu.uIntensity.value = lineK;
     lu.uTime.value = now;
     lu.uSpeedK.value = speed / 12;
-    lines.mesh.visible = lineK > 0.004 && !!camera;
+    lines.mesh.visible = lineK > 0.004 && !!camera && !paused;
     if (lines.mesh.visible){
       camera.getWorldQuaternion(camQuat);
-      lines.mesh.matrix.compose(camPos, camQuat, ONE);
+      lines.setPose(camPos, camQuat, ONE);     // matrixWorldNeedsUpdate ставит сам setPose
     }
 
     soft.flush(); glow.flush();
     soft.update(); glow.update();
+    // DOM-конфетти шагает отсюда же — своего requestAnimationFrame у него по умолчанию нет
+    if (confetti && dt > 0) confetti.step(dt);
   }
 
-  function clear(){ soft.clear(); glow.clear(); soft.flush(); glow.flush(); carry.fill(0); }
+  function clear(){ soft.clear(); glow.clear(); soft.flush(); glow.flush(); carry.fill(0); if (confetti) confetti.clear(); }
 
   function stats(){
     return { live: soft.live() + glow.live(), soft: soft.live(), glow: glow.live(),
       capacity: soft.capacity + glow.capacity, snow: snow.mesh.visible ? snow.mesh.geometry.instanceCount : 0,
-      lines: +lineK.toFixed(3), visibleMeshes: root.children.filter(m => m.visible).length, quality: Qname, reduced };
+      lines: +lineK.toFixed(3), lineCols: lines.uniforms.uCols.value,
+      visibleMeshes: root.children.filter(m => m.visible).length, quality: Qname, reduced, paused,
+      confetti: confetti ? confetti.stats().live : 0 };
   }
 
   function dispose(){
     if (root.parent) root.parent.remove(root);
     soft.dispose(); glow.dispose(); snow.dispose(); lines.dispose(); atlas.dispose();
+    if (confetti){ confetti.dispose(); confetti = null; }
   }
 
   setReducedMotion(reduced);
 
   return {
-    root, emit, setIntensity, setReducedMotion, setTarget, setBoost, tierUp, setSpeedLinesHidden,
-    update, clear, stats, dispose,
+    root, emit, opts: makeOpts,
+    setIntensity, setReducedMotion, setQuality, setSnowEnabled, setTarget, setBoost, setPaused, tierUp,
+    setSpeedLinesHidden, celebrate, update, clear, stats, dispose,
+    get confetti(){ return confetti; },
+    get paused(){ return paused; },
     get time(){ return now; },
     // для тестов/тонкой настройки
     parts: { soft, glow, snow, lines, atlas },

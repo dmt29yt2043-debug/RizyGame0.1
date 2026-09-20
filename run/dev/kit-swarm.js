@@ -178,19 +178,32 @@ addEventListener("resize", () => {
 const DANGER = num("danger", 0), FROM = qp.has("from") ? +qp.get("from") : null, SW = num("sw", 3);
 const AT = num("at", 5), TS = num("ts", 1);
 const CATCH = qp.get("catch") === "1", CT = num("ct", 1.2);
+// ?hit=T — как в игре: в T удар, near = true на cfg.swarmTime (5.5 с), danger линейно спадает 1 → 0, потом swarm:far
+const HIT = qp.has("hit") ? +qp.get("hit") : null, SWARM_TIME = num("swarmTime", 5.5);
+// ?revive=T — в T ударная волна (после ?catch=1 — «второй шанс»)
+const REVIVE = qp.has("revive") ? +qp.get("revive") : null;
 // cam=close — крупный план: титульное облако в 2 м перед камерой, заглушка Ризи скрыта
-const S = { mode: CAMMODE === "title" || CAMMODE === "close" ? "title" : "play", danger: 0, playerX: 0, playerY: 0, playerZ: 0, speedI: num("speed", 0.4),
+const S = { mode: CAMMODE === "title" || CAMMODE === "close" ? "title" : "play", near: false, danger: 0, playerX: 0, playerY: 0, playerZ: 0, speedI: num("speed", 0.4),
   titleDist: CAMMODE === "close" ? 1.5 : 14 };
 if (CAMMODE === "close") rizy.visible = false;
-let simTime = 0, caught = false;
+let simTime = 0, caught = false, revived = false, wasNear = false;
 function step(dt){
   const t = simTime;
-  let d = DANGER;
-  if (FROM != null && t < SW) d = FROM;
-  if (CATCH) d = 1;
-  S.danger = d;
+  let d = DANGER, near = qp.has("near") ? qp.get("near") === "1" : DANGER > 0;
+  if (FROM != null && t < SW){ d = FROM; near = FROM > 0; }
+  if (HIT != null){
+    const u = t - HIT;
+    near = u >= 0 && u < SWARM_TIME;
+    d = near ? 1 - u / SWARM_TIME : 0;
+  }
+  if (CATCH){ d = 1; near = true; }
+  S.danger = d; S.near = near;
+  // адаптер зовёт far() по событию swarm:far (кит и сам ловит спад near — это проверка, что двойной вызов безвреден)
+  if (wasNear && !near) swarm.far();
+  wasNear = near;
   if (CATCH && !caught && t >= AT){ swarm.catch({ x: 0, y: 0, z: 0 }); caught = true; S.mode = "over"; }
-  const sim = CATCH && caught ? dt * TS : dt;
+  if (REVIVE != null && !revived && t >= REVIVE){ swarm.revive({ x: 0, y: 0, z: 0 }); revived = true; S.mode = "play"; }
+  const sim = CATCH && caught && !revived ? dt * TS : dt;
   swarm.update(dt, sim, S);
   if (post) post.params.danger = d * num("dv", 0.5);
   simTime += dt;
@@ -261,18 +274,44 @@ const TEST = {
 };
 window.TEST = TEST;
 
+// Игровой таймлайн без рендера: удар в 0.5 с, near 5.5 с с линейным спадом danger, затем swarm:far.
+// Возвращает [t, danger, presence, sulk, eyeLevel] каждые 0.25 с — проверка «рой держится до far».
+TEST.timeline = (dur = 9, hitAt = 0.5) => {
+  swarm.reset();
+  const s = { mode: "play", near: false, danger: 0, playerX: 0, playerY: 0, playerZ: 0, speedI: 0.4 };
+  const out = []; let prev = false;
+  for (let i = 0; i <= dur * 60; i++){
+    const t = i / 60, u = t - hitAt;
+    s.near = u >= 0 && u < SWARM_TIME; s.danger = s.near ? 1 - u / SWARM_TIME : 0;
+    if (prev && !s.near) swarm.far();
+    prev = s.near;
+    swarm.update(1 / 60, 1 / 60, s);
+    if (i % 15 === 0){ const st = swarm.stats(); out.push([+t.toFixed(2), +s.danger.toFixed(2), st.presence, st.sulk, st.eyeLevel]); }
+  }
+  return JSON.stringify(out);
+};
+// замер update(): мс на кадр (среднее по 600 кадрам)
+TEST.perf = () => {
+  const s = { mode: "play", near: true, danger: 1, playerX: 0, playerY: 0, playerZ: 0, speedI: 0.5 };
+  for (let i = 0; i < 60; i++) swarm.update(1 / 60, 1 / 60, s);
+  const t0 = performance.now();
+  for (let i = 0; i < 600; i++) swarm.update(1 / 60, 1 / 60, s);
+  return +((performance.now() - t0) / 600).toFixed(4);
+};
+
 const info = document.getElementById("info");
-const label = () => `swarm q=${Q} danger=${S.danger} mode=${S.mode} t=${simTime.toFixed(2)} ` + JSON.stringify(swarm.stats());
+const label = () => `swarm q=${Q} near=${S.near} danger=${S.danger.toFixed(2)} mode=${S.mode} t=${simTime.toFixed(2)} ` + JSON.stringify(swarm.stats());
 if (qp.get("hideui") === "1") info.hidden = true;
 
-if (qp.has("shot")){
-  const total = CATCH ? AT + CT : AT;
-  const n = Math.round(total * 60);
-  for (let i = 0; i < n; i++) step(1 / 60);
-  frame(1 / 60);
-  info.textContent = label();
-  document.title = "SHOT_READY";
-} else {
+// Любой запуск сначала детерминированно проигрывает симуляцию до кадра (шаг 1/60), рендерит ОДИН кадр и ставит SHOT_READY.
+// ?shot=1 на этом останавливается; без него дальше идёт живой цикл (для ручного просмотра).
+const total = Math.max(AT + (CATCH ? CT : 0), REVIVE != null ? REVIVE + num("rt", 0.6) : 0);
+const n = Math.round(total * 60);
+for (let i = 0; i < n; i++) step(1 / 60);
+frame(1 / 60);
+info.textContent = label();
+document.title = "SHOT_READY";
+if (!qp.has("shot")){
   let last = performance.now();
   const loop = (now) => {
     const dt = Math.min(0.05, (now - last) / 1000); last = now;

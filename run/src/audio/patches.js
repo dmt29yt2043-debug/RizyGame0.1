@@ -306,9 +306,14 @@ function relief(sr, rng){
 }
 
 // ---------- UI ----------
+// hover-тик: sine 1800 Гц 25 мс, 0.05 — плюс стеклянная негармоника 3.9f и щелчок 2 мс, чтобы не «пищало»
 function uiHover(sr, rng){
-  const b = buf(sr, 0.04); let ph = 0;
-  for (let i = 0; i < b.length; i++){ const t = i / sr; ph += TAU * 1800 / sr; b[i] = Math.sin(ph) * env(t, 0.002, 0.025) * 0.05; }
+  const b = buf(sr, 0.04), hp = new Biquad("hp", sr).set(5000, 0.7); let ph = 0, p2 = 0;
+  for (let i = 0; i < b.length; i++){
+    const t = i / sr; ph += TAU * 1800 / sr; p2 += TAU * 1800 * 3.9 / sr;
+    b[i] = (Math.sin(ph) * env(t, 0.0015, 0.025) + 0.25 * Math.sin(p2) * env(t, 0.001, 0.008)
+          + (t < 0.002 ? hp.run(rng() * 2 - 1) * 0.5 * (1 - t / 0.002) : 0)) * 0.05;
+  }
   return fadeEdges(b, sr);
 }
 function uiClick(sr, rng){
@@ -373,36 +378,62 @@ export function reverbIR(sr, sec, seed = 11){
   return [L, R];
 }
 
+// удар в подкат из воздуха (dive): вжух сверху вниз 2400→500 Гц за 120 мс + мягкий войлочный «тук» 120→60 Гц
+function dive(sr, rng){
+  const b = buf(sr, 0.3), bp = new Biquad("bp", sr), pink = pinkGen(rng); let ph = 0;
+  for (let i = 0; i < b.length; i++){
+    const t = i / sr;
+    if (i % 16 === 0) bp.set(sweep(2400, 500, 0.12, t), 1.1);
+    const air = bp.run(rng() * 2 - 1) * 2.2 * (t < 0.012 ? t / 0.012 : Math.exp(-4.6 * (t - 0.012) / 0.14));
+    const td = t - 0.1; ph += td > 0 ? TAU * sweep(120, 60, 0.08, td) / sr : 0;
+    b[i] = air * 0.13 + (td > 0 ? Math.sin(ph) * env(td, 0.003, 0.12) * 0.16 + pink() * 0.5 * env(td, 0.001, 0.03) * 0.1 : 0);
+  }
+  return fadeEdges(b, sr, 12);
+}
+
 // ---------- БАНК ----------
-// один раз на sampleRate; держим Float32Array, AudioBuffer делает index.js
+// Генератор по шагам: prepare() в index.js крутит его кусками по ~8 мс между кадрами загрузки,
+// unlock() в жесте только добивает остаток. Порядок вызовов rng фиксирован → буферы бит в бит те же.
+const midiSet = (arrs) => { const s = new Set(); for (const a of arrs) for (const m of a) s.add(m); return [...s]; };
+export function* bankSteps(sr, B){
+  const r = makeRng(1234567);
+  B.sr = sr;
+  B.kick = kick(sr, r); B.hat = [1, 0.7, 0.4].map(v => hat(sr, r, v)); B.snare = snare(sr, r); yield;
+  B.bass = {}; for (const c of CHORDS){ B.bass[c.root] = bass(sr, r, c.root); B.bass[c.root + 12] = bass(sr, r, c.root + 12); } yield;
+  B.pluck = {}; for (const m of midiSet(CHORDS.flatMap(c => [c.arp, c.arpM]))) B.pluck[m] = pluck(sr, r, m); yield;
+  B.lead = {}; for (const m of midiSet([PENT, PENT_M])) B.lead[m] = lead(sr, r, m); yield;
+  B.sleigh = [1, 0.5].map(v => sleigh(sr, r, v));
+  B.tom = {}; for (const m of TOMS) B.tom[m] = tom(sr, r, m); yield;
+  B.riser = riser(sr, r); yield;
+  B.ladder = LADDER_HZ.map((_, s) => ladderNote(sr, r, s, false)); yield;
+  B.ladderMin = LADDER_HZ.map((_, s) => ladderNote(sr, r, s, true)); yield;
+  B.arc = arc(sr, r, false); B.arcMin = arc(sr, r, true); yield;
+  B.whoosh = whoosh(sr, r, 0); B.nearmiss = whoosh(sr, r, 4); yield;
+  B.jump = jump(sr, r); B.land = land(sr, r); B.slide = slide(sr, r); yield;
+  B.step = [0, 1, 2, 3].map(() => step(sr, r));
+  B.edge = edge(sr, r); yield;
+  B.boom = boom(sr, r); B.bonk = bonk(sr, r); B.diss = diss(sr, r); yield;
+  B.goJingle = goJingle(sr, r); yield;
+  B.heart = heart(sr, r); B.chirp = chirp(sr, r); B.relief = relief(sr, r); yield;
+  B.uiHover = uiHover(sr, r); B.uiClick = uiClick(sr, r); B.start = startRise(sr, r);
+  B.tier = [1, 2, 3, 4].map(n => tier(sr, r, n)); yield;
+  B.mission = mission(sr, r); B.record = record(sr, r); yield;
+  B.fanfare = fanfare(sr, r); yield;
+  B.tick = LADDER_HZ.map((_, s) => tick(sr, r, s));
+  B.count = [0, 1, 2, 3].map(n => count(sr, r, n)); yield;
+  B.dive = dive(sr, r);
+  // зацикленный розовый шум ветра 2 с, шов петли — кроссфейд 50 мс
+  const pr = pinkGen(makeRng(99)), pn = new Float32Array(sr * 2);
+  for (let i = 0; i < pn.length; i++) pn[i] = pr();
+  const x = Math.round(sr * 0.05);
+  for (let i = 0; i < x; i++){ const k = i / x; pn[pn.length - x + i] = pn[pn.length - x + i] * (1 - k) + pn[i] * k; }
+  B.pinkLoop = pn.subarray(0, pn.length - x);
+}
+// синхронная сборка целиком (офлайн-тесты и фолбэк, если prepare() не звали)
 export function buildBank(sr){
   const T0 = (typeof performance !== "undefined" ? performance.now() : 0);
-  const r = makeRng(1234567);
-  const midiSet = (arrs) => { const s = new Set(); for (const a of arrs) for (const m of a) s.add(m); return [...s]; };
-  const B = { sr };
-  B.kick = kick(sr, r);
-  B.hat = [1, 0.7, 0.4].map(v => hat(sr, r, v));
-  B.snare = snare(sr, r);
-  B.bass = {}; for (const c of CHORDS){ B.bass[c.root] = bass(sr, r, c.root); B.bass[c.root + 12] = bass(sr, r, c.root + 12); }
-  B.pluck = {}; for (const m of midiSet(CHORDS.flatMap(c => [c.arp, c.arpM]))) B.pluck[m] = pluck(sr, r, m);
-  B.lead = {}; for (const m of midiSet([PENT, PENT_M])) B.lead[m] = lead(sr, r, m);
-  B.sleigh = [1, 0.5].map(v => sleigh(sr, r, v));
-  B.tom = {}; for (const m of TOMS) B.tom[m] = tom(sr, r, m);
-  B.riser = riser(sr, r);
-  B.ladder = LADDER_HZ.map((_, s) => ladderNote(sr, r, s, false));
-  B.ladderMin = LADDER_HZ.map((_, s) => ladderNote(sr, r, s, true));
-  B.arc = arc(sr, r, false); B.arcMin = arc(sr, r, true);
-  B.whoosh = whoosh(sr, r, 0); B.nearmiss = whoosh(sr, r, 4);
-  B.jump = jump(sr, r); B.land = land(sr, r); B.slide = slide(sr, r);
-  B.step = [0, 1, 2, 3].map(() => step(sr, r));
-  B.edge = edge(sr, r);
-  B.boom = boom(sr, r); B.bonk = bonk(sr, r); B.diss = diss(sr, r); B.goJingle = goJingle(sr, r);
-  B.heart = heart(sr, r); B.chirp = chirp(sr, r); B.relief = relief(sr, r);
-  B.uiHover = uiHover(sr, r); B.uiClick = uiClick(sr, r); B.start = startRise(sr, r);
-  B.tier = [1, 2, 3, 4].map(n => tier(sr, r, n));
-  B.mission = mission(sr, r); B.record = record(sr, r); B.fanfare = fanfare(sr, r);
-  B.tick = LADDER_HZ.map((_, s) => tick(sr, r, s));
-  B.count = [0, 1, 2, 3].map(n => count(sr, r, n));
+  const B = {};
+  for (const _ of bankSteps(sr, B)){}
   B.ms = (typeof performance !== "undefined" ? performance.now() : 0) - T0;
   return B;
 }
