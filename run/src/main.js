@@ -268,7 +268,7 @@ function doAction(a, src){
   if (a === "LEFT" || a === "RIGHT") changeLane(a === "LEFT" ? -1 : 1);
   else if (a === "UP"){
     if (G.sliding > 0) G.sliding = 0;            // прыжок отменяет подкат
-    if (grounded() || (groundT < cfg.coyote && !jumpedSinceGround && G.vy <= 0)) jump();
+    if (grounded() || (G.py <= 0.01 && G.vy <= 0.01) || (groundT < cfg.coyote && !jumpedSinceGround && G.vy <= 0)) jump();
     else buf.jump = cfg.inputBuffer;
   } else if (a === "DOWN"){
     if (!grounded()) dive();
@@ -572,7 +572,8 @@ function updateGame(simDt, realDt){
     G.vy -= g * simDt;
     G.py += (vy0 + G.vy) * 0.5 * simDt;       // трапеция: точная высота при постоянной g (Эйлер недобирал ~0.1 м)
     groundT = 0;
-    if (G.py <= 0){
+    // приземление — только когда падаем: при simDt=0 (стоп-кадр обучения) прыжок ещё не оторвал от земли
+    if (G.py <= 0 && G.vy <= 0){
       const vy = G.vy, wasDive = G.dive;
       G.py = 0; G.vy = 0; G.dive = false; jumpedSinceGround = false;
       if (vy < -2){
@@ -714,7 +715,7 @@ const TUT_TEXT = {
   touch: { lane: "Свайп вбок — сменить дорожку", jump: "Свайп вверх — прыжок", slide: "Свайп вниз — подкат" },
   keys:  { lane: "← → / A D — сменить дорожку", jump: "↑ / W / Пробел — прыжок", slide: "↓ / S — подкат" },
 };
-const tutS = { idx:0, phase:"", rampFrom:1, rampTo:1, rampT:1, rampDur:0.2, msgT:0, done:false, satisfied:false };
+const tutS = { idx:0, phase:"", rampFrom:1, rampTo:1, rampT:1, rampDur:0.2, msgT:0, done:false, satisfied:false, holdT:0 };
 function tutEmit(n, phase, action, text){
   const T = G.tutorial;
   T.step = n; T.phase = phase; T.action = action;
@@ -763,11 +764,19 @@ function tutorialUpdate(realDt){
   // «верно» проверяем по состоянию, а не только по нажатию: вернулся в центр — снова подсказка
   let ok = tutS.satisfied;
   if (st.action === "lane") ok = G.lane !== 1;
-  else if (st.action === "jump") ok = ok && (G.py > 0 || G.vy > 0);
+  else if (st.action === "jump") ok = ok && (G.py > 0 || G.vy > 0 || jumpedSinceGround);   // флаг держится и при остановленном времени
   else if (st.action === "slide") ok = ok && (G.sliding > 0 || G.dive);
   if (!ok){
     if (tth <= TT.holdAt){
-      if (tutS.phase !== "hold"){ tutS.phase = "hold"; tutRamp(0, 0.06); tutEmit(st.n, "hold", st.action, kindText); }
+      if (tutS.phase !== "hold" && tutS.phase !== "timeout"){
+        tutS.phase = "hold"; tutS.holdT = 0; tutRamp(0, 0.06); tutEmit(st.n, "hold", st.action, kindText);
+      } else if (tutS.phase === "hold"){
+        // защита от вечного ожидания: случайный подкат гасим по реальному времени,
+        // а через holdMax секунд отпускаем мир — в обучении удар без штрафа
+        if (G.sliding > 0) G.sliding = Math.max(0, G.sliding - realDt);
+        tutS.holdT += realDt;
+        if (tutS.holdT > TT.holdMax){ tutS.phase = "timeout"; tutRamp(1, TT.back); }
+      }
     } else if (tth <= TT.slowAt && tutS.phase !== "prompt" && tutS.phase !== "hold"){
       tutS.phase = "prompt"; tutRamp(TT.slowTo, TT.slowIn); tutEmit(st.n, "prompt", st.action, kindText);
     }

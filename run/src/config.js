@@ -77,7 +77,7 @@ export const cfg = {
   recordMin: 100,
 
   // ---------- ТУТОРИАЛ (GAME-7) ----------
-  tutorial: { key: "rizyrun_tut_v1", speed: 11, slowAt: 1.2, holdAt: 0.35, slowTo: 0.2, slowIn: 0.18, back: 0.25 },
+  tutorial: { key: "rizyrun_tut_v1", speed: 11, slowAt: 1.2, holdAt: 0.35, slowTo: 0.2, slowIn: 0.18, back: 0.25, holdMax: 2.5 },
 
   // ---------- КАМЕРА (CAM-1..5) ----------
   CAM: { fov: 60, fovI: 8, y: 3.8, z: 6.4, zI: 0.7, lookY: 1.0, lookZ: -10, near: 0.1, far: 400,
