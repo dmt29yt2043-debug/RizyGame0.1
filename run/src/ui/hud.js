@@ -173,7 +173,7 @@ export function createHUD(ctx = {}, opts = {}) {
       return;
     }
     if (!MODAL[t]) return;
-    const inHud = root.contains(ev.target);
+    const inHud = ev.target instanceof Node && root.contains(ev.target);   // синтетические события могут прийти с target = window
     if (!inHud) ev.stopImmediatePropagation();
     const el = inHud && ev.target.closest ? ev.target.closest("button, input") : null;
     if (el && (k === "ENTER" || k === "SPACE" || (el.tagName === "INPUT" && k !== "ESC"))) return;
