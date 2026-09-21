@@ -2,7 +2,7 @@
 // Быстрый headless-тест игры через Chrome DevTools Protocol (без внешних зависимостей, Node ≥ 22).
 // Параллельно-безопасно: у каждого запуска свой профиль и свой порт.
 //   node tools/cdp.mjs --query "seed=7&shot=1&at=4" --out shot.png [--w 1280 --h 720]
-//        [--page /run/] [--wait-title SHOT_READY] [--eval "JS-выражение"] [--settle 1500] [--timeout 150]
+//        [--base https://host/prefix] [--page /run/] [--wait-title SHOT_READY] [--eval "JS-выражение"] [--settle 1500] [--timeout 150]
 // Печатает JSON: { ok, title, crash, exceptions, console, eval, ms, out }
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
@@ -24,8 +24,9 @@ const query = typeof A.query === "string" ? A.query : "";
 
 async function alive(u){ try { const r = await fetch(u, { signal: AbortSignal.timeout(2500) }); return r.ok; } catch { return false; } }
 const gameRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-let base = "http://localhost:5199";
-if (!await alive(base + "/run/index.html")){
+// --base https://host/prefix — тестировать выложенную версию (GitHub Pages / прод) вместо локального сервера
+let base = typeof A.base === "string" ? A.base.replace(/\/$/, "") : "http://localhost:5199";
+if (!A.base && !await alive(base + "/run/index.html")){
   base = "http://localhost:5198";
   if (!await alive(base + "/run/index.html")){
     spawn("python3", ["-m", "http.server", "5198"], { cwd: gameRoot, detached: true, stdio: "ignore" }).unref();
