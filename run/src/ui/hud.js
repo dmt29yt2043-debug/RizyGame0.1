@@ -4,7 +4,7 @@
 // Кит только показывает и сообщает о намерениях игрока (события on(...)); управлять игрой — дело адаптера.
 import { EASE, createClock, numView, spring, damp, clamp, OPACITY, SCALE_X, table, easeOutExpo } from "./anim.js";
 import { buildDOM, RING_C, REV_C } from "./hud-dom.js";
-import { parseTemplate, pluralRu, TXT } from "./text.js";
+import { parseTemplate, pluralRu, TXT, POWER } from "./text.js";
 import { loadSettings, saveSettings, DEFAULT_SETTINGS } from "./progress.js";
 
 const CSS_URL = new URL("./hud.css", import.meta.url).href;
@@ -54,7 +54,7 @@ const TUT = {
   down:  { touch: "Свайп вниз — подкат", keys: ["↓"], alt: "/ S", act: "подкат", dir: [0, 1] },
   tap:   { touch: "Нажми, чтобы бежать!", keys: ["Пробел"], alt: "", act: "бежать", dir: [0, 0] },
 };
-const MODAL = { pause: 1, results: 1, settings: 1, revive: 1 };
+const MODAL = { pause: 1, results: 1, settings: 1, revive: 1, shop: 1 };
 const OVER_PLAY = { pause: 1, revive: 1 };
 
 export function createHUD(ctx = {}, opts = {}) {
@@ -105,37 +105,45 @@ export function createHUD(ctx = {}, opts = {}) {
   const STOP = ["pointerdown", "pointerup", "mousedown", "mouseup", "touchstart", "touchend", "click", "dblclick", "contextmenu"];
   for (const t of STOP) root.addEventListener(t, onStopEv, { passive: true });
 
-  let screen = "none", locked = false, resResolve = null, settingsOpen = false;
-  const top = () => (settingsOpen ? "settings" : screen);
+  let screen = "none", locked = false, resResolve = null, settingsOpen = false, shopOpen = false;
+  const top = () => (settingsOpen ? "settings" : shopOpen ? "shop" : screen);
 
   function act(name) {
     switch (name) {
       case "restart": case "menu":
-        if (settingsOpen) return;
+        if (settingsOpen || shopOpen) return;
         if (screen === "results") {
           if (locked) return;
           const r = resResolve; resResolve = null;
           emit(name); if (r) r(name);
         } else if (screen === "pause" && name === "menu") emit("menu");
         return;
+      case "continue":
+        // «Продолжить за N ⬡»: только на результатах, после блокировки и если хватает энергонов
+        if (screen !== "results" || locked || !contOk) return;
+        emit("continue");
+        return;
       case "pause": if (screen === "play" && !settingsOpen) emit("pause"); return;
       case "resume": if (screen === "pause" && !settingsOpen) emit("resume"); return;
       case "settings": openSettings(); return;
       case "close": closeSettings(); return;
+      case "shop": openShop(); return;
+      case "shop:close": closeShop(); return;
       case "revive": case "decline": finishRevive(name); return;
       case "tutorial": if (settingsOpen) closeSettings(); emit("tutorial"); return;
       case "tutorial:skip": emit("tutorial:skip"); return;
     }
   }
   root.addEventListener("click", ev => {
-    const b = ev.target.closest && ev.target.closest("[data-act],[data-set],[data-rm]");
+    const b = ev.target.closest && ev.target.closest("[data-act],[data-set],[data-rm],[data-buy]");
     if (!b || !root.contains(b)) return;
     if (b.dataset.set) return toggleSetting(b.dataset.set);
     if (b.dataset.rm) return setRmChoice(b.dataset.rm);
+    if (b.dataset.buy) { if (shopOpen && !b.disabled) emit("buy", b.dataset.buy); return; }
     if (b.dataset.act !== "start") act(b.dataset.act);
   });
   // тап по титулу: событие start (main и так стартует по своему pointerdown — адаптер стартует, только если G.mode всё ещё "title")
-  R.title.querySelector(".rz-title-tap").addEventListener("pointerup", () => { if (screen === "title" && !settingsOpen) emit("start"); });
+  R.title.querySelector(".rz-title-tap").addEventListener("pointerup", () => { if (screen === "title" && !settingsOpen && !shopOpen) emit("start"); });
 
   // громкости: 4 слайдера (пауза + настройки) синхронны; emit на input, запись на change
   const RANGES = [R.volM, R.volS, R.setVolM, R.setVolS];
@@ -175,6 +183,7 @@ export function createHUD(ctx = {}, opts = {}) {
     if (t === "results") { if (go || k === "UP") act("restart"); else if (k === "ESC") act("menu"); }
     else if (t === "pause") { if (go || k === "ESC" || k === "P") act("resume"); }
     else if (t === "settings") { if (k === "ESC") act("close"); }
+    else if (t === "shop") { if (k === "ESC") act("shop:close"); }
     else if (t === "revive") { if (go) act("revive"); else if (k === "ESC") act("decline"); }
   };
   const onKeyRoot = ev => { if (MODAL[top()]) ev.stopPropagation(); };
@@ -219,6 +228,8 @@ export function createHUD(ctx = {}, opts = {}) {
     if (name !== "revive" && revResolve) finishRevive("cancel");
     if (name !== "play" && name !== "pause" && name !== "revive") hideTransient();
     if (settingsOpen && name !== "title" && name !== "pause") closeSettings();
+    if (shopOpen && name !== "title") closeShop();
+    if (name === "play") for (const p of POWER) setPowerup(p.kind, 0);
     // фокус не должен остаться на скрытой кнопке (иначе Пробел «нажмёт» её)
     const ae = document.activeElement;
     if (ae && root.contains(ae) && ae.closest("[hidden]")) ae.blur();
@@ -297,6 +308,92 @@ export function createHUD(ctx = {}, opts = {}) {
     const back = screen === "pause" ? R.resumeBtn : screen === "title" ? R.gear : null;
     if (back) back.focus({ preventScroll: true });
     emit("settings:close", settings);
+  }
+
+  // ---------- кошелёк и прокачка (ECON) ----------
+  // opts.shop = { prices: [ур.1, ур.2, ур.3], dur: { kind: [база, ур.1, ур.2, ур.3] } } — числа из cfg.power
+  const shopInfo = opts.shop || { prices: [150, 400, 900], dur: {} };
+  const walletN = numView(R.tWallet, 7), sWalletN = numView(R.sWallet, 7);
+  let walletV = 0;
+  const shopLv = { magnet: 0, shield: 0, boost: 0, x2: 0 };
+  function setWallet(n) {
+    walletV = Math.max(0, Math.round(n || 0));
+    walletN.set(walletV); sWalletN.set(walletV);
+    refreshShop();
+  }
+  function setUpgrades(levels) {
+    if (levels) for (const p of POWER) shopLv[p.kind] = clamp(levels[p.kind] | 0, 0, shopInfo.prices.length);
+    refreshShop();
+  }
+  function refreshShop() {
+    for (const p of POWER) {
+      const r = R.shopRows[p.kind], lv = shopLv[p.kind], maxLv = shopInfo.prices.length;
+      const durs = shopInfo.dur[p.kind] || [];
+      for (let i = 0; i < r.lv.length; i++) r.lv[i].classList.toggle("on", i < lv);
+      r.cur.textContent = durs[lv] != null ? TXT.sec(durs[lv]) : "";
+      const max = lv >= maxLv;
+      r.nxt.textContent = max ? TXT.shopMax : (durs[lv + 1] != null ? TXT.sec(durs[lv + 1]) : "");
+      r.arr.hidden = max;
+      r.row.classList.toggle("max", max);
+      if (max) { r.price.textContent = TXT.shopMax; r.btn.disabled = true; r.btn.classList.remove("poor"); }
+      else {
+        const price = shopInfo.prices[lv];
+        r.price.textContent = String(price);
+        const ok = walletV >= price;
+        r.btn.disabled = !ok; r.btn.classList.toggle("poor", !ok);
+      }
+    }
+  }
+  function openShop() {
+    if (shopOpen || screen !== "title") return;
+    shopOpen = true;
+    refreshShop();
+    R.shop.hidden = false;
+    clock.play(R.shopShade, [{ opacity: 0 }, { opacity: 1 }], { duration: rm ? 1 : 200, easing: "linear" }, { keep: true, chan: "in", group: "shop" });
+    clock.play(R.shopCard, [{ opacity: 0, transform: rm ? "none" : "translateY(24px) scale(.96)" }, { opacity: 1, transform: "none" }],
+      { duration: rm ? 1 : 220, easing: EASE.outBack }, { keep: true, chan: "in", group: "shop" });
+    clock.after(rm ? 1 : 120, () => R.shopClose.focus({ preventScroll: true }), "shop");
+    emit("shop");
+  }
+  function closeShop() {
+    if (!shopOpen) return;
+    shopOpen = false;
+    clock.cancelGroup("shop"); clock.clearEl(R.shop);
+    R.shop.hidden = true;
+    if (screen === "title") R.shopBtn.focus({ preventScroll: true });
+    emit("shop:close");
+  }
+  // покупка удалась: подпрыгивание строки
+  function shopBought(kind) {
+    const r = R.shopRows[kind];
+    if (!r || rm) return;
+    clock.play(r.row, [{ transform: "scale(1)" }, { transform: "scale(1.04)", offset: 0.4 }, { transform: "scale(1)" }], { duration: 300, easing: EASE.outBack }, { chan: "b" });
+  }
+
+  // ---------- активные ускорители (POWER): иконка + убывающая полоска ----------
+  const pwOn = { magnet: false, shield: false, boost: false, x2: false };
+  const pwIdx = { magnet: -1, shield: -1, boost: -1, x2: -1 };
+  const pwLow = { magnet: false, shield: false, boost: false, x2: false };
+  function setPowerup(kind, frac) {
+    const c = R.pw[kind];
+    if (!c) return;
+    const on = frac > 0;
+    if (on !== pwOn[kind]) {
+      pwOn[kind] = on;
+      if (on) {
+        c.el.hidden = false; pwIdx[kind] = -1;
+        clock.play(c.el, [{ opacity: 0, transform: rm ? "none" : "scale(.5)" }, { opacity: 1, transform: "none" }],
+          { duration: rm ? 1 : 260, easing: EASE.outBack }, { keep: true, chan: "v" });
+      } else {
+        clock.play(c.el, [{ opacity: 1, transform: "none" }, { opacity: 0, transform: rm ? "none" : "scale(.7)" }],
+          { duration: rm ? 1 : 200, easing: EASE.outCubic }, { keep: true, chan: "v", done: () => { if (!pwOn[kind]) c.el.hidden = true; } });
+      }
+    }
+    if (!on) return;
+    const i = Math.round(clamp(frac, 0, 1) * 400);
+    if (i !== pwIdx[kind]) { pwIdx[kind] = i; c.bar.style.transform = SCALE_X[i]; }
+    const low = frac < 0.25;
+    if (low !== pwLow[kind]) { pwLow[kind] = low; c.el.classList.toggle("low", low); }
   }
 
   // ---------- числа ----------
@@ -764,7 +861,7 @@ export function createHUD(ctx = {}, opts = {}) {
   }
 
   // ---------- результаты (HUD-7) ----------
-  let resT = 0, resOn = false;
+  let resT = 0, resOn = false, contOk = false;
   const roll = [
     { nv: rDistN, to: 0, t0: 0, dur: 1, row: 0, last: -1 },
     { nv: rEnN, to: 0, t0: 0, dur: 700, row: 1, last: -1 },
@@ -791,6 +888,20 @@ export function createHUD(ctx = {}, opts = {}) {
     R.rTotal.hidden = bonus <= 0;                          // без бонуса итог совпадает с «Энергоны»
     R.streakChip.hidden = !(stats.streak > 1);
     if (stats.streak > 1) R.streakChip.textContent = TXT.streak(stats.streak);
+    // ECON: «+N за забег · всего M» и «Продолжить за 100 ⬡» (неактивна с подсказкой, если не хватает)
+    const w = stats.wallet;
+    R.walletLine.hidden = !w;
+    if (w) R.walletTxt.textContent = TXT.walletLine(Math.round(w.earned || 0), Math.round(w.total || 0));
+    const rv = stats.revive;
+    contOk = !!(rv && rv.can);
+    R.contBtn.hidden = !rv;
+    R.contHint.hidden = !rv || contOk;
+    if (rv) {
+      R.contTxt.textContent = TXT.cont(Math.round(rv.price || 0));
+      R.contBtn.disabled = !contOk; R.contBtn.classList.toggle("dim", !contOk);
+      if (!contOk) R.contHint.textContent = TXT.contNo(Math.round(rv.have || 0), Math.round(rv.price || 0));
+    }
+    if (w) setWallet(w.total);
     // подсказка: меньшее из «до рекорда» и «до следующих 500 м» (по дистанции — рекорд в метрах)
     let hint;
     if (isBest) hint = TXT.best;
@@ -837,6 +948,7 @@ export function createHUD(ctx = {}, opts = {}) {
       { duration: 240, delay, easing: EASE.outCubic }, O());
     rowIn(R.rDist, 200, -16);
     rowIn(R.rEn, 290, -16);
+    rowIn(R.walletLine, 380, 0);
     rowIn(R.bestLine, 380, 0);
     rowIn(R.tip, 470, 0);
     rowIn(R.quip, 470, 0);
@@ -872,7 +984,7 @@ export function createHUD(ctx = {}, opts = {}) {
     clock.after(1000, () => {
       locked = false;
       R.resBtns.classList.remove("off");
-      R.restartBtn.focus({ preventScroll: true });
+      (contOk ? R.contBtn : R.restartBtn).focus({ preventScroll: true });
       if (!rm) clock.play(R.restartBtn, [{ transform: "scale(1)" }, { transform: "scale(1.04)" }, { transform: "scale(1)" }],
         { duration: 1600, iterations: Infinity, easing: "ease-in-out" }, { chan: "br", group: G });
       emit("results:ready");
@@ -1004,18 +1116,25 @@ export function createHUD(ctx = {}, opts = {}) {
     show, setDistance, setBest, setStars, setEnergons, flyToCounter, projectToHUD, popLabel,
     setCombo, setMission, missionComplete, setDanger, countdown, go, runCountdown, banner, milestone, toast, allowFlash,
     results, revive, tutorial, tutorialPraise, openSettings, closeSettings, on,
+    setWallet, setUpgrades, setPowerup, openShop, closeShop, shopBought,
     setReducedMotion, setEnergonIcon, setVolumes, update, dispose,
     get screen() { return screen; }, get locked() { return locked; }, get reducedMotion() { return rm; },
-    get settings() { return settings; }, get settingsOpen() { return settingsOpen; },
+    get settings() { return settings; }, get settingsOpen() { return settingsOpen; }, get shopOpen() { return shopOpen; },
     _debug: { clock, R },
   };
 }
 
 /* ===================== КОНТРАКТ =====================
-createHUD(ctx, { container, touch?, reducedMotion?, edges?, keys?, persist?, settings?, milestoneStep? })
+createHUD(ctx, { container, touch?, reducedMotion?, edges?, keys?, persist?, settings?, milestoneStep?, shop? })
   ctx: { quality, camera?, look? } — больше ничего не читает. Корень .rz-hud вставляется в container.
   hud.ready — промис: CSS и Nunito (кириллица + латиница) загружены.
-Экраны: show("none"|"title"|"play"|"pause"|"revive"|"results"); openSettings()/closeSettings() — оверлей поверх title/pause.
+  shop: { prices: [ур.1, ур.2, ур.3], dur: { magnet|shield|boost|x2: [база, ур.1, ур.2, ур.3] } } — числа магазина (cfg.power).
+Экраны: show("none"|"title"|"play"|"pause"|"revive"|"results"); openSettings()/closeSettings() — оверлей поверх title/pause;
+  openShop()/closeShop() — карточка «Прокачка» поверх title.
+Экономика: setWallet(n) — кошелёк на титуле и в магазине; setUpgrades({kind: 0..3}) — уровни; shopBought(kind) — отклик покупки;
+  results({ …, wallet: {earned, total}, revive: {price, can, have} }) — строка «+N за забег · всего M» и кнопка «Продолжить за N»
+  (неактивна с подсказкой, если can=false) → событие continue.
+Ускорители: setPowerup(kind, frac 0..1) — чип с иконкой и убывающей полоской (0 — спрятать); звать каждый кадр, без аллокаций.
 Игра: setDistance(m) · setBest(m) · setStars(n) · setEnergons(n, {instant?, streak?, bump?}) · flyToCounter(x, y)
   · projectToHUD(v3, out) · popLabel(text, "plus"|"big"|"nice"|"warn"|"info", x?, y?, ms?) · setCombo(tier, progress, {mult?})
   · setMission(tpl|view, progress, {n, stars, total, intro}) · missionComplete({stars, total, next}) → Promise
@@ -1029,5 +1148,6 @@ createHUD(ctx, { container, touch?, reducedMotion?, edges?, keys?, persist?, set
 События on(evt, fn) → off(): start, pause, resume, menu, restart, tutorial, tutorial:skip, tutorial:shown, tutorial:praise,
   settings, settings:change(settings), settings:close, volume({music, sfx}), reducedmotion(bool), screen(name),
   countdown(n), go, milestone(m), combo:tier(n), mission:step(n), mission:complete, confetti({kind, x?, y?}),
-  tick(row), ding, stamp, results:ready, revive:ready, revive:answer(ans), fly:arrive
+  tick(row), ding, stamp, results:ready, revive:ready, revive:answer(ans), fly:arrive,
+  continue (кнопка «Продолжить за N»), shop, shop:close, buy(kind)
 */

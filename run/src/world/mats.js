@@ -142,6 +142,10 @@ export function createMats(ctx, U){
   mats.haloCoin = haloMat(0xC0FF3F, 0.32);
   mats.haloCoin.uniforms.uLift.value = -0.4;         // ореол энергона за кристаллом, не поверх граней
   mats.haloLamp = haloMat(0xFFD890, 0.0);
+  // ускорители: ореол белый, оттенок бонуса — инстансный цвет (USE_INSTANCING_COLOR в шейдере ореола)
+  mats.haloPower = haloMat(0xFFFFFF, 0.7);
+  mats.haloPower.uniforms.uLift.value = -0.6;
+  mats.glowPower = glowMat(0xFFFFFF, 2.4);           // кольцо-искра ускорителя (цвет — инстансный)
 
   // ---------- blob-тень ----------
   const dot = (L && L.tex && L.tex.softDot) || own(softDotTex());

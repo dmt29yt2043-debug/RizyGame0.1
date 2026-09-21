@@ -5,6 +5,7 @@
 //   kit.update(simDt, realDt, G)        // каждый кадр; G.dist — единственное, что обязательно
 //   kit.makeObstacle(ent) → Object3D    // прокси из пула; main пишет proxy.position.z = ent.z
 //   kit.makeCoin(ent) → Object3D
+//   kit.makePowerup(ent) → Object3D     // ускоритель: ent.kind "magnet"|"shield"|"boost"|"x2", парит на ent.y
 //   kit.release(obj)                    // на despawn/pickup
 //   kit.setPalette(i, instant?)         // 0 УТРО, 1 ПОЛДЕНЬ-КЭНДИ, 2 ЗОЛОТОЙ ЧАС, 3 СИНИЙ ЧАС
 //   kit.setBest(best)                   // флаг «РЕКОРД» на дистанции best (WORLD-7), звать на старте забега
@@ -164,7 +165,7 @@ export function createWorldKit(ctx, opts = {}){
 
   return {
     root, state, events, update,
-    makeObstacle: ents.makeObstacle, makeCoin: ents.makeCoin, release: ents.release,
+    makeObstacle: ents.makeObstacle, makeCoin: ents.makeCoin, makePowerup: ents.makePowerup, release: ents.release,
     setPalette, applyLights, compile, dispose,
     // планировщик сет-пьес и подсказки геймплею
     landmarks: pieces.plan,                                   // [{ type, s0, len, shown, revealed, entered, exited, payload }]

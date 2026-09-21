@@ -57,7 +57,7 @@ export function createAnimator(opts = {}){
   // титул: взгляд по сторонам, взмах рукой, моргание — детерминированный псевдорандом
   let seed = 12345;
   const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
-  let lookFrom = 0, lookTo = 0, lookT = BIG, nextLook = 4.5, waveT = BIG, nextWave = 6.0, blinkT = BIG, nextBlink = 3.9;
+  let lookFrom = 0, lookTo = 0, lookT = BIG, nextLook = 4.5, waveT = BIG, nextWave = 6.0, blinkT = BIG, nextBlink = 3.2;   // первое моргание в 3.2 с: кадры титула и ?shot=1&at=4 не ловят полуприкрытые глаза
   let dangerT = 0, dangerSide = 1;
   // пружины (real)
   let bx = 0, bvx = 0, by = 0, bvy = 0, kx = 0, kvx = 0, ky = 0, kvy = 0;

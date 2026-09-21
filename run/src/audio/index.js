@@ -20,7 +20,10 @@ import { bankSteps, CHORDS, PENT, PENT_M, TOMS, reverbIR } from "./patches.js";
 
 export const BUS_DEFAULTS = { master: 0.8, music: 0.55, sfx: 0.9, ui: 0.6, amb: 0.35 };
 export const SOUND_NAMES = ["energon", "arc", "lane", "jump", "dive", "land", "slide", "edge", "nearmiss", "hit", "gameover",
-  "milestone", "record", "mission", "tier", "tick", "count", "start", "uiHover", "uiClick", "relief", "chirp"];
+  "milestone", "record", "mission", "tier", "tick", "count", "start", "uiHover", "uiClick", "relief", "chirp",
+  "powerup", "powerdown", "shield"];
+// высота подбора ускорителя по виду (playbackRate): магнит ниже, ×2 выше
+const POWER_RATE = { magnet: 0.92, shield: 1.0, boost: 1.12, x2: 1.22 };
 
 // ---------- банк: сырые Float32Array по sampleRate (общие для всех контекстов) ----------
 // Буферы можно играть в контексте с другой частотой (браузер ресемплирует), поэтому prepare() считает банк на 48 кГц
@@ -743,6 +746,9 @@ export function createAudio(ctx = {}, opts = {}){
       case "uiClick": voice(uiPool, B.uiClick, t, vary(1), 0, varyRate(30)); return true;
       case "relief": voice(sfxPool, B.relief, t, 1, 0, 1); return true;
       case "chirp": voice(ambPool, B.chirp, t, 1, pan, varyRate(80)); return true;
+      case "powerup": voice(uiPool, B.powerup, t, 1, 0, POWER_RATE[o && o.kind] || 1); vibrate([10, 30, 20]); return true;
+      case "powerdown": voice(uiPool, B.powerdown, t, 0.9, 0, POWER_RATE[o && o.kind] || 1); return true;
+      case "shield": voice(sfxPool, B.shieldPop, t, 1, 0, varyRate(15)); vibrate(20); return true;
     }
     return false;
   }

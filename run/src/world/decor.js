@@ -1,15 +1,19 @@
-// world-kit: трёхслойный инстансный декор с ритмом (WORLD-2) + фонари каждые 12 м через сторону.
-// A ближний (сетка 3 м, x ±5.4..7.5, 30% пропусков, заборы сериями), B средний (9 ± 3 м, x ±9.5..18),
-// C дальние карточки (x ±26..70), фонари, льдины на реке (WORLD-6). Запись идёт в кольцевые буферы по «дистанции трассы» s;
-// экземпляры переписываются только когда список изменился (спавн/уход за камеру), прокрутка — сдвигом группы.
+// world-kit: многослойный инстансный декор с ритмом (WORLD-2) + фонари каждые 12 м через сторону.
+// A ближний (сетка 3 м, x ±5.5..7.5, заборы сериями), A2 второй ближний ряд (x ±7.7..9.6: кусты, валуны, кристаллы,
+// подарки, грибы, указатели, санки), B средний (4.5 ± 2 м, x ±9.5..21: ёлки, рощицы, домики, мельница, башня),
+// H холмы с ёлками (x ±20..38, между средним планом и задниками), C дальние карточки двумя рядами (x ±26..48 и ±48..90),
+// фонари, гирлянды-растяжки над трассой каждые 36 м, льдины на реке (WORLD-6).
+// Запись идёт в кольцевые буферы по «дистанции трассы» s; экземпляры переписываются только когда список изменился
+// (спавн/уход за камеру), прокрутка — сдвигом группы.
 import * as THREE from "three";
 import { Part, makeRng } from "./util.js";
 import * as PR from "./props.js";
 import { bankHeight } from "./track.js";
 
-export const L_NEAR = 0, L_MID = 1, L_FAR = 2, L_LAMP = 3, L_RIVER = 4;
-const NL = 5;                                        // число слоёв
+export const L_NEAR = 0, L_MID = 1, L_FAR = 2, L_LAMP = 3, L_RIVER = 4, L_NEAR2 = 5, L_HILL = 6, L_BUNT = 7, L_SKY = 8;
+const NL = 9;                                        // число слоёв
 const AHEAD = 112, BEHIND = 12;
+const BUNT_STEP = 36;                                // растяжки: каждые 36 м, между фонарями (фонари кратны 12)
 
 class Ring {
   constructor(cap){
@@ -48,41 +52,63 @@ export function createDecor(mats, o){
   }
 
   // ---------- типы ----------
-  const N = { cane: type(L_NEAR, [[PR.nearCane(), mats.candy, 40]]),
-    fence: type(L_NEAR, [[PR.nearFence(), mats.felt, 48]]),
-    lolli: type(L_NEAR, [[PR.nearLolliTree(), mats.candy, 40]]),
-    hump:  type(L_NEAR, [[PR.nearHummock(), mats.snowDecor, 40]]),
-    fir:   type(L_NEAR, [[PR.nearFir(), mats.felt, 40]]),
-    snowman: type(L_NEAR, [[PR.nearSnowman(), mats.felt, 24]]) };
-  const hA = PR.midHouseA(), hB = PR.midHouseB();
-  const Md = { treeA: type(L_MID, [[PR.midTreeA(), mats.felt, 20]]),
-    treeB: type(L_MID, [[PR.midTreeB(), mats.felt, 20]]),
-    houseA: type(L_MID, [[hA.body, mats.felt, 12], [hA.win, mats.glowWin, 12, { receive: false }]]),
-    houseB: type(L_MID, [[hB.body, mats.felt, 12], [hB.win, mats.glowWin, 12, { receive: false }]]),
-    jelly: type(L_MID, [[PR.midJellyHill(), mats.candy, 12]]),
-    lolly: type(L_MID, [[PR.midBigLolly(), mats.candy, 12]]) };
+  const N = { cane: type(L_NEAR, [[PR.nearCane(), mats.candy, 48]]),
+    fence: type(L_NEAR, [[PR.nearFence(), mats.felt, 56]]),
+    lolli: type(L_NEAR, [[PR.nearLolliTree(), mats.candy, 48]]),
+    hump:  type(L_NEAR, [[PR.nearHummock(), mats.snowDecor, 48]]),
+    fir:   type(L_NEAR, [[PR.nearFir(), mats.felt, 56]]),
+    snowman: type(L_NEAR, [[PR.nearSnowman(), mats.felt, 28]]) };
+  const N2 = { bush: type(L_NEAR2, [[PR.nearBush(), mats.felt, 40]]),
+    rock:  type(L_NEAR2, [[PR.nearRock(), mats.felt, 32]]),
+    crystals: type(L_NEAR2, [[PR.nearCrystals(), mats.candy, 28]]),
+    gifts: type(L_NEAR2, [[PR.nearGifts(), mats.candy, 24]]),
+    mush:  type(L_NEAR2, [[PR.nearMushroom(), mats.candy, 24]]),
+    sign:  type(L_NEAR2, [[PR.nearSign(), mats.candy, 20]]),
+    sled:  type(L_NEAR2, [[PR.nearSled(), mats.felt, 20]]),
+    hump:  type(L_NEAR2, [[PR.nearHummock(), mats.snowDecor, 32]]) };
+  const hA = PR.midHouseA(), hB = PR.midHouseB(), wm = PR.midWindmill(), tw = PR.midTower();
+  const Md = { treeA: type(L_MID, [[PR.midTreeA(), mats.felt, 32]]),
+    treeB: type(L_MID, [[PR.midTreeB(), mats.felt, 32]]),
+    grove: type(L_MID, [[PR.midGrove(), mats.felt, 24]]),
+    houseA: type(L_MID, [[hA.body, mats.felt, 16], [hA.win, mats.glowWin, 16, { receive: false }]]),
+    houseB: type(L_MID, [[hB.body, mats.felt, 16], [hB.win, mats.glowWin, 16, { receive: false }]]),
+    jelly: type(L_MID, [[PR.midJellyHill(), mats.candy, 14]]),
+    lolly: type(L_MID, [[PR.midBigLolly(), mats.candy, 14]]),
+    windmill: type(L_MID, [[wm.body, mats.felt, 8], [wm.win, mats.glowWin, 8, { receive: false }]]),
+    tower: type(L_MID, [[tw.body, mats.candy, 8], [tw.win, mats.glowWin, 8, { receive: false }]]) };
+  const HILL = [type(L_HILL, [[PR.farHill(0), mats.felt, 16]]), type(L_HILL, [[PR.farHill(1), mats.felt, 16]])];
   const card = () => { const g = new THREE.PlaneGeometry(1, 1); g.translate(0, 0.5, 0); return g; };
-  const F = { trees: type(L_FAR, [[card(), mats.cardTrees, 28, { receive: false }]]),
-    houses: type(L_FAR, [[card(), mats.cardHouses, 20, { receive: false }]]) };
+  const F = { trees: type(L_FAR, [[card(), mats.cardTrees, 64, { receive: false }]]),
+    houses: type(L_FAR, [[card(), mats.cardHouses, 48, { receive: false }]]) };
   const lampG = PR.lamp();
   const LAMP = type(L_LAMP, [[lampG.body, mats.candy, 16], [lampG.core, mats.glowLamp, 16, { receive: false }],
     [new THREE.PlaneGeometry(1, 1), mats.haloLamp, 16, { receive: false, renderOrder: 3 }]]);
   T[LAMP].halo = 2; T[LAMP].coreY = lampG.coreY;
+  const BUNT = type(L_BUNT, [[PR.bunting(), mats.candy, 6]]);
   const FLOE = type(L_RIVER, [[PR.floe(), mats.ice, 48, { receive: true }]]);
+  const BALLOON = type(L_SKY, [[PR.balloon(), mats.candy, 10, { receive: false }]]);
 
-  // веса ближнего и среднего слоёв (забор — отдельной серией)
+  // веса слоёв (забор — отдельной серией)
   const NEAR_PICK = [[N.fir, 0.30], [N.hump, 0.22], [N.cane, 0.18], [N.lolli, 0.18], [N.snowman, 0.12]];
-  const MID_PICK = [[Md.treeA, 0.30], [Md.treeB, 0.25], [Md.houseA, 0.14], [Md.houseB, 0.12], [Md.jelly, 0.10], [Md.lolly, 0.09]];
-  const SKIP = Q === "low" ? 0.45 : Q === "high" ? 0.22 : 0.30;
+  const NEAR2_PICK = [[N2.bush, 0.22], [N2.rock, 0.14], [N2.hump, 0.12], [N2.crystals, 0.12], [N2.gifts, 0.10], [N2.mush, 0.10], [N2.sign, 0.10], [N2.sled, 0.10]];
+  const MID_PICK = [[Md.treeA, 0.21], [Md.treeB, 0.17], [Md.grove, 0.16], [Md.houseA, 0.12], [Md.houseB, 0.10], [Md.jelly, 0.08], [Md.lolly, 0.06], [Md.windmill, 0.05], [Md.tower, 0.05]];
+  // пропуски: ближний ряд почти сплошной, второй ряд — «через один», на low экономим
+  const SKIP = Q === "low" ? 0.40 : Q === "high" ? 0.10 : 0.18;
+  const SKIP2 = Q === "low" ? 0.70 : Q === "high" ? 0.35 : 0.48;
+  const MID_GAP = Q === "low" ? [6, 6] : [4.5, 4.5];       // [минимум, разброс]
+  const HILL_GAP = Q === "low" ? [14, 12] : [9, 10];
 
   // ---------- состояние слоёв ----------
   const SIDES = [-1, 1];
-  const rings = [[new Ring(64), new Ring(64)], [new Ring(32), new Ring(32)], [new Ring(32), new Ring(32)], [new Ring(20)], [new Ring(24), new Ring(24)]];
+  const rings = [[new Ring(64), new Ring(64)], [new Ring(48), new Ring(48)], [new Ring(64), new Ring(64)], [new Ring(20)], [new Ring(24), new Ring(24)],
+                 [new Ring(48), new Ring(48)], [new Ring(20), new Ring(20)], [new Ring(6)], [new Ring(5), new Ring(5)]];
   const rng = [[makeRng(seed * 11 + 1), makeRng(seed * 11 + 2)], [makeRng(seed * 13 + 3), makeRng(seed * 13 + 4)],
-               [makeRng(seed * 17 + 5), makeRng(seed * 17 + 6)], [makeRng(seed * 19 + 7)], [makeRng(seed * 29 + 8), makeRng(seed * 29 + 9)]];
-  const next = [[0, 0], [0, 0], [0, 0], [0], [0, 0]];
-  const side = { last: [[-1, -1], [-1, -1]], fence: [0, 0], cool: [0, 0], lampSide: -1 };
-  const dirty = [true, true, true, true, true];
+               [makeRng(seed * 17 + 5), makeRng(seed * 17 + 6)], [makeRng(seed * 19 + 7)], [makeRng(seed * 29 + 8), makeRng(seed * 29 + 9)],
+               [makeRng(seed * 31 + 10), makeRng(seed * 31 + 11)], [makeRng(seed * 37 + 12), makeRng(seed * 37 + 13)], [makeRng(seed * 41 + 14)],
+               [makeRng(seed * 43 + 15), makeRng(seed * 43 + 16)]];
+  const next = [[0, 0], [0, 0], [0, 0], [0], [0, 0], [0, 0], [0, 0], [0], [0, 0]];
+  const side = { last: [[-1, -1], [-1, -1], [-1, -1], [-1, -1]], fence: [0, 0], cool: [0, 0], lampSide: -1 };
+  const dirty = new Array(NL).fill(true);
   let s0 = 0, lastDist = -1e9;
 
   function pickW(r, table, avoid){
@@ -117,32 +143,69 @@ export function createDecor(mats, o){
     const y = bankHeight(Math.abs(x)) * 0.6 - 0.08;
     ring.push(s, t, x, y, cs, sn, sc, sc, tint);
   }
+  // второй ближний ряд: за валом, между забором и средним планом; вещи «повернуты к трассе»
+  function spawnNear2(si, s){
+    const sd = SIDES[si], r = rng[L_NEAR2][si], ring = rings[L_NEAR2][si];
+    if (blocked(s, L_NEAR, sd)) return;
+    if (r() < SKIP2) return;
+    const t = pickW(r, NEAR2_PICK, side.last[2][si]); side.last[2][si] = t;
+    const x = sd * (7.7 + r() * 1.9), sc = 0.8 + r() * 0.4;
+    const yaw = (t === N2.sign || t === N2.gifts || t === N2.sled) ? (r() - 0.5) * 0.6 - sd * 0.2 : r() * Math.PI * 2;
+    ring.push(s + r() * 2, t, x, bankHeight(Math.abs(x)) * 0.6 - 0.08, Math.cos(yaw), Math.sin(yaw), sc, sc, 0.94 + r() * 0.12);
+  }
   function spawnMid(si, s){
     const sd = SIDES[si], r = rng[L_MID][si], ring = rings[L_MID][si];
     if (blocked(s, L_MID, sd)) return;
     if (river && river.sideAt(s, 14) === sd) return;          // река заменяет средний слой с этой стороны
     const t = pickW(r, MID_PICK, side.last[1][si]); side.last[1][si] = t;
-    const x = sd * (9.5 + r() * 8.5), sc = 0.85 + r() * 0.35;
+    const big = t === Md.windmill || t === Md.tower || t === Md.grove;
+    const x = sd * ((big ? 12 : 9.5) + r() * (big ? 8 : 10)), sc = 0.85 + r() * 0.35;
     let yaw;
-    if (t === Md.houseA || t === Md.houseB) yaw = (sd > 0 ? -0.97 : 0.97) + (r() - 0.5) * 0.6;
+    if (t === Md.houseA || t === Md.houseB || t === Md.windmill) yaw = (sd > 0 ? -0.97 : 0.97) + (r() - 0.5) * 0.6;
     else if (t === Md.lolly) yaw = (r() - 0.5) * 0.87;
     else yaw = r() * Math.PI * 2;
     ring.push(s, t, x, bankHeight(Math.abs(x)) * 0.5, Math.cos(yaw), Math.sin(yaw), sc, sc, 0.94 + r() * 0.12);
+  }
+  // холмы с ёлками: объём между средним планом и плоскими задниками; не на реке
+  function spawnHill(si, s){
+    const sd = SIDES[si], r = rng[L_HILL][si], ring = rings[L_HILL][si];
+    if (blocked(s, L_MID, sd)) return;
+    if (river && river.sideAt(s, 22) === sd) return;
+    const t = HILL[r() < 0.5 ? 0 : 1], sc = 0.8 + r() * 0.5;
+    const x = sd * (20 + r() * 18), yaw = r() * Math.PI * 2;
+    ring.push(s, t, x, -0.4, Math.cos(yaw), Math.sin(yaw), sc, sc * (0.9 + r() * 0.3), 0.96 + r() * 0.06);
   }
   function spawnFar(si, s){
     const sd = SIDES[si], r = rng[L_FAR][si], ring = rings[L_FAR][si];
     if (blocked(s, L_FAR, sd)) return;
     const t = r() < 0.62 ? F.trees : F.houses;
     const x0 = river && river.sideAt(s, 20) === sd ? 38 : 26;   // за рекой, а не на льду
-    const x = sd * (x0 + r() * (70 - x0)), w = (t === F.trees ? 18 : 22) + r() * 14, h = w * (0.42 + r() * 0.16);
+    const x = sd * (x0 + r() * (48 - x0)), w = (t === F.trees ? 18 : 22) + r() * 14, h = w * (0.42 + r() * 0.16);
     const yaw = -sd * 0.18 * r();
     ring.push(s, t, x, -0.5, Math.cos(yaw), Math.sin(yaw), w, h, 0.9 + r() * 0.1);
+    // второй, дальний ряд: крупнее и бледнее — горизонт не пустует
+    if (r() < 0.7){
+      const t2 = r() < 0.7 ? F.trees : F.houses, x2 = sd * (48 + r() * 42), w2 = 30 + r() * 24, h2 = w2 * (0.4 + r() * 0.14);
+      ring.push(s + 3, t2, x2, -0.5, Math.cos(yaw), Math.sin(yaw), w2, h2, 0.86 + r() * 0.1);
+    }
   }
   function spawnLamp(s){
     const sd = side.lampSide; side.lampSide = -sd;
     if (blocked(s, L_LAMP, sd)) return;
     const x = sd * 5.45;
     rings[L_LAMP][0].push(s, LAMP, x, bankHeight(5.45) * 0.55 - 0.05, 1, 0, 1, 1, 1);
+  }
+  // гирлянда над трассой: оба вала должны быть свободны от сет-пьес и ворот
+  function spawnBunting(s){
+    if (blocked(s, L_LAMP, -1) || blocked(s, L_LAMP, 1)) return;
+    rings[L_BUNT][0].push(s, BUNT, 0, bankHeight(5.45) * 0.55 - 0.05, 1, 0, 1, 1, 1);
+  }
+
+  // воздушные шары: высоко и далеко в стороне, чтобы верх кадра не пустовал
+  function spawnBalloon(si, s){
+    const sd = SIDES[si], r = rng[L_SKY][si], ring = rings[L_SKY][si];
+    const x = sd * (16 + r() * 30), y = 9 + r() * 9, sc = 1.2 + r() * 0.9, yaw = r() * Math.PI * 2;
+    ring.push(s, BALLOON, x, y, Math.cos(yaw), Math.sin(yaw), sc, sc, 1);
   }
 
   // льдины: только внутри русла (|x| 17..29 — с запасом от берегов 12..34)
@@ -155,8 +218,9 @@ export function createDecor(mats, o){
 
   function reset(dist){
     for (const L of rings) for (const g of L) g.clear();
-    for (const l of [L_NEAR, L_MID, L_FAR, L_RIVER]) for (let si = 0; si < 2; si++) next[l][si] = dist - BEHIND + (l === L_NEAR ? 0 : rng[l][si]() * 6);
+    for (const l of [L_NEAR, L_NEAR2, L_MID, L_HILL, L_FAR, L_RIVER, L_SKY]) for (let si = 0; si < 2; si++) next[l][si] = dist - BEHIND + (l === L_NEAR ? 0 : rng[l][si]() * (l === L_SKY ? 60 : 6));
     next[L_LAMP][0] = Math.ceil((dist - BEHIND) / 12) * 12;
+    next[L_BUNT][0] = Math.ceil((dist - BEHIND - 18) / BUNT_STEP) * BUNT_STEP + 18;
     side.fence[0] = side.fence[1] = 0; side.cool[0] = side.cool[1] = 0;
     s0 = Math.floor(dist); dirty.fill(true);
   }
@@ -187,14 +251,18 @@ export function createDecor(mats, o){
     const lim = dist + AHEAD, old = dist - BEHIND;
     for (let si = 0; si < 2; si++){
       while (next[L_NEAR][si] < lim){ spawnNear(si, next[L_NEAR][si]); next[L_NEAR][si] += STEP_NEAR; dirty[L_NEAR] = true; }
-      while (next[L_MID][si] < lim){ spawnMid(si, next[L_MID][si]); next[L_MID][si] += 6 + rng[L_MID][si]() * 6; dirty[L_MID] = true; }
-      while (next[L_FAR][si] < lim + 20){ spawnFar(si, next[L_FAR][si]); next[L_FAR][si] += 7 + rng[L_FAR][si]() * 8; dirty[L_FAR] = true; }
+      while (next[L_NEAR2][si] < lim){ spawnNear2(si, next[L_NEAR2][si]); next[L_NEAR2][si] += STEP_NEAR; dirty[L_NEAR2] = true; }
+      while (next[L_MID][si] < lim){ spawnMid(si, next[L_MID][si]); next[L_MID][si] += MID_GAP[0] + rng[L_MID][si]() * MID_GAP[1]; dirty[L_MID] = true; }
+      while (next[L_HILL][si] < lim + 20){ spawnHill(si, next[L_HILL][si]); next[L_HILL][si] += HILL_GAP[0] + rng[L_HILL][si]() * HILL_GAP[1]; dirty[L_HILL] = true; }
+      while (next[L_FAR][si] < lim + 20){ spawnFar(si, next[L_FAR][si]); next[L_FAR][si] += 5 + rng[L_FAR][si]() * 6; dirty[L_FAR] = true; }
       while (next[L_RIVER][si] < lim){ spawnFloe(si, next[L_RIVER][si]); next[L_RIVER][si] += 4 + rng[L_RIVER][si]() * 6; dirty[L_RIVER] = true; }
+      while (next[L_SKY][si] < lim + 40){ spawnBalloon(si, next[L_SKY][si]); next[L_SKY][si] += 70 + rng[L_SKY][si]() * 60; dirty[L_SKY] = true; }
     }
     while (next[L_LAMP][0] < lim){ spawnLamp(next[L_LAMP][0]); next[L_LAMP][0] += 12; dirty[L_LAMP] = true; }
+    while (next[L_BUNT][0] < lim){ spawnBunting(next[L_BUNT][0]); next[L_BUNT][0] += BUNT_STEP; dirty[L_BUNT] = true; }
     for (let l = 0; l < NL; l++) for (let g = 0; g < rings[l].length; g++){
       const ring = rings[l][g];
-      const back = l === L_FAR ? old - 30 : old;
+      const back = l === L_FAR ? old - 30 : l === L_HILL ? old - 16 : l === L_SKY ? old - 40 : old;
       while (ring.len && ring.s[ring.head] < back){ ring.shift(); dirty[l] = true; }
     }
     if (dist - s0 > 400){ s0 += 400; dirty.fill(true); }

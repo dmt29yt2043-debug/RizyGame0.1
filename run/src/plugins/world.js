@@ -24,6 +24,9 @@ export default {
     bus.on("spawn:coin", e => {
       try { e.object3d = kit.makeCoin(e); } catch(err){ console.error("[world] makeCoin", err); }
     });
+    bus.on("spawn:powerup", e => {
+      try { e.object3d = kit.makePowerup(e); } catch(err){ console.error("[world] makePowerup", err); }
+    });
     bus.on("despawn", e => {
       if (e && e.object3d){ try { kit.release(e.object3d); } catch(err){} e.object3d = null; }
     });

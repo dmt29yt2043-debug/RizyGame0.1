@@ -32,9 +32,18 @@ export function createEntities(mats, o){
   const core = part(PR.coinCore(), mats.coinCore, CAP_COIN, { receive: false });
   const halo = part(PR.quad(), mats.haloCoin, CAP_COIN, { receive: false, renderOrder: 5 });
   const blob = part(PR.groundQuad(1, 1), mats.blob, CAP_COIN, { receive: false, renderOrder: 2 });
-  const ALL = [jump, banner, bar, bulbs, pole, walls[0], walls[1], walls[2], decal, shell, core, halo, blob];
+  // ускорители: фигурка по виду (рисуется только активная часть — обычно 1 draw call) + кольцо + ореол + blob-тень
+  const CAP_PW = 8;
+  const pw = [part(PR.powerMagnet(), mats.candy, CAP_PW, { cast: true }), part(PR.powerShield(), mats.candy, CAP_PW, { cast: true }),
+              part(PR.powerBoost(), mats.candy, CAP_PW, { cast: true }), part(PR.powerX2(), mats.candy, CAP_PW, { cast: true })];
+  const pwRing = part(PR.powerRing(), mats.glowPower, CAP_PW, { receive: false });
+  const pwHalo = part(PR.quad(), mats.haloPower, CAP_PW, { receive: false, renderOrder: 5 });
+  const ALL = [jump, banner, bar, bulbs, pole, walls[0], walls[1], walls[2], decal, shell, core, halo, blob, pw[0], pw[1], pw[2], pw[3], pwRing, pwHalo];
+  const PW_KIND = { magnet: 0, shield: 1, boost: 2, x2: 3 };
+  // оттенки ореола и кольца (линейные): синий, небесный, лайм, розовый
+  const PW_COL = [[0.05, 0.25, 1.0], [0.45, 0.85, 1.0], [0.7, 1.0, 0.2], [1.0, 0.45, 0.72]];
 
-  const liveO = [], liveC = [], freeO = [], freeC = [];
+  const liveO = [], liveC = [], liveP = [], freeO = [], freeC = [], freeP = [];
 
   function attach(p, list){ p.userData.kit = 1; p.userData.idx = list.length; list.push(p); root.add(p); return p; }
 
@@ -43,7 +52,7 @@ export function createEntities(mats, o){
     const u = p.userData, lanes = ent.lanes && ent.lanes.length ? ent.lanes : [1];
     let lo = 2, hi = 0;
     for (let i = 0; i < lanes.length; i++){ if (lanes[i] < lo) lo = lanes[i]; if (lanes[i] > hi) hi = lanes[i]; }
-    u.coin = false; u.lo = lo; u.hi = hi;
+    u.coin = false; u.pw = false; u.lo = lo; u.hi = hi;
     u.kind = ent.kind === "jump" ? K_JUMP : ent.kind === "slide" ? K_SLIDE : K_WALL;
     const z = typeof ent.z === "number" ? ent.z : 0;
     // вариант стены: от z и полосы — у многополосной стены (отдельные сущности с общим z) соседи разные
@@ -53,19 +62,27 @@ export function createEntities(mats, o){
   }
   function makeCoin(ent){
     const p = freeC.pop() || new THREE.Object3D();
-    p.userData.coin = true;
+    p.userData.coin = true; p.userData.pw = false;
     p.position.set(ent.x != null ? ent.x : LANES[ent.lane != null ? ent.lane : 1], ent.y != null ? ent.y : 0.95, ent.z || 0);
     p.scale.set(1, 1, 1); p.visible = true;
     return attach(p, liveC);
   }
+  function makePowerup(ent){
+    const p = freeP.pop() || new THREE.Object3D();
+    const u = p.userData;
+    u.coin = false; u.pw = true; u.kind = PW_KIND[ent.kind] || 0;
+    p.position.set(ent.x != null ? ent.x : LANES[ent.lane != null ? ent.lane : 1], ent.y != null ? ent.y : 1.1, ent.z || 0);
+    p.scale.set(1, 1, 1); p.visible = true;
+    return attach(p, liveP);
+  }
   function release(p){
     if (!p || !p.userData || !p.userData.kit) return false;
-    const u = p.userData, list = u.coin ? liveC : liveO;
+    const u = p.userData, list = u.pw ? liveP : u.coin ? liveC : liveO;
     u.kit = 0;
     const last = list.pop();
     if (last !== p){ list[u.idx] = last; last.userData.idx = u.idx; }
     if (p.parent) p.parent.remove(p);
-    (u.coin ? freeC : freeO).push(p);
+    (u.pw ? freeP : u.coin ? freeC : freeO).push(p);
     return true;
   }
 
@@ -116,10 +133,24 @@ export function createEntities(mats, o){
       const bs = 0.7 * (1 - 0.35 * clamp((yy - 0.95) / 1.2, 0, 1)) * s;
       blob.pushS(x, 0.03, z, 1, 0, bs, 1, bs, 1, 1, 1);
     }
+    // ускорители: парение 1.1 ± 0.12 м, вращение 2.4 рад/с, кольцо крутится быстрее, ореол и тень в цвет бонуса
+    for (let i = liveP.length - 1; i >= 0; i--){
+      const p = liveP[i];
+      if (!p.parent){ release(p); continue; }
+      if (!p.visible) continue;
+      const x = p.position.x, y = p.position.y, z = p.position.z, s = p.scale.x, k = p.userData.kind, c = PW_COL[k];
+      if (z < -135 || z > 12) continue;
+      const ang = t * 2.4 + z * 0.15, yy = y + 0.12 * Math.sin(t * 2.6 + z * 0.4) * wave;
+      const cs = Math.cos(ang), sn = Math.sin(ang), a2 = ang * 1.7, sc = 1.3 * s;   // фигурка крупнее энергона: читается издалека
+      pw[k].pushS(x, yy, z, cs, sn, sc, sc, sc, 1, 1, 1);
+      pwRing.pushS(x, yy, z, Math.cos(a2), Math.sin(a2), sc, sc, sc, c[0], c[1], c[2]);
+      pwHalo.pushS(x, yy, z, 1, 0, 3.2 * s, 3.2 * s, 3.2 * s, c[0], c[1], c[2]);
+      blob.pushS(x, 0.03, z, 1, 0, 1.2 * s, 1, 1.2 * s, 1, 1, 1);
+    }
     for (let i = 0; i < ALL.length; i++) ALL[i].end();
     aDecal.needsUpdate = true;
   }
 
   function dispose(){ for (const g of geos) g.dispose(); }
-  return { root, makeObstacle, makeCoin, release, update, liveObstacles: liveO, liveCoins: liveC, parts: ALL, dispose };
+  return { root, makeObstacle, makeCoin, makePowerup, release, update, liveObstacles: liveO, liveCoins: liveC, livePowerups: liveP, parts: ALL, dispose };
 }

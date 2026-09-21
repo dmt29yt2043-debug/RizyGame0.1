@@ -1,13 +1,14 @@
-// АДАПТЕР интерфейса: HUD-кит src/ui (пилюли, миссии, комбо, карточки) вместо базового DOM из index.html.
+// АДАПТЕР интерфейса: HUD-кит src/ui (пилюли, миссии, комбо, карточки, кошелёк, магазин, ускорители) вместо базового DOM из index.html.
 import { createHUD } from "../ui/hud.js";
 import { createMissions, recordDaily } from "../ui/progress.js";
+import { POWER } from "../ui/text.js";
 
 const LEGACY = ["score", "energons", "swarm", "title", "over"];
 
 export default {
   name: "hud",
   async install(ctx){
-    const { G, bus, cfg } = ctx;
+    const { G, bus, cfg, qp } = ctx;
     const $ = id => document.getElementById(id);
     const prev = {};
     for (const id of LEGACY){ const el = $(id); if (el){ prev[id] = el.style.display; el.style.display = "none"; } }
@@ -18,6 +19,7 @@ export default {
         container: $("wrap"),
         milestoneStep: (cfg && cfg.milestoneStep) || 250,
         edges: !(ctx.look && ctx.look.post),   // если пост рисует виньетку — HUD свою не дублирует
+        shop: cfg && cfg.power ? { prices: cfg.power.prices, dur: cfg.power.dur } : undefined,
       });
       await Promise.race([hud.ready, new Promise(r => setTimeout(r, 2000))]);
     } catch (e){
@@ -29,18 +31,30 @@ export default {
     const has = n => hud && typeof hud[n] === "function";
     const call = (n, a, b, c) => { if (has(n)){ try { return hud[n](a, b, c); } catch(e){ console.error("[hud] " + n, e); } } };
     const act = a => { const R = window.RUN; if (R && typeof R.doAction === "function") R.doAction(a); };
+    const actions = () => ctx.actions || (window.RUN && window.RUN.actions) || null;
 
     let missions = null;
     try { missions = createMissions(); } catch(e){}
     try { recordDaily(); } catch(e){}
     call("setBest", G.best || 0);
     if (missions && missions.stars != null) call("setStars", missions.stars);
+    call("setWallet", G.wallet || 0);
+    call("setUpgrades", G.upgrades);
     try { if (hud.settings) bus.emit("settings", hud.settings); } catch(e){}
 
     // кнопки HUD → действия игры
     if (has("on")){
       const map = { start:"ENTER", restart:"ENTER", again:"ENTER", play:"ENTER", resume:"ESC", pause:"ESC", title:"ESC", menu:"ESC" };
       for (const k in map){ try { hud.on(k, () => act(map[k])); } catch(e){} }
+      // ECON: «Продолжить за N ⬡» и покупки в магазине идут напрямую в actions main
+      try { hud.on("continue", () => { const A = actions(); if (A && typeof A.revive === "function") A.revive(); }); } catch(e){}
+      try {
+        hud.on("buy", kind => {
+          const A = actions();
+          if (!A || typeof A.buyUpgrade !== "function") return;
+          if (A.buyUpgrade(kind)){ call("setUpgrades", G.upgrades); call("shopBought", kind); }
+        });
+      } catch(e){}
     }
 
     const tmpV = { x:0, y:0, z:0 }, tmpXY = { x:0, y:0 };
@@ -60,7 +74,18 @@ export default {
       if (view) call("setMission", view, view.progress, view);
     };
 
-    bus.on("title", () => { call("show", "title"); call("setBest", G.best || 0); if (missions && missions.stars != null) call("setStars", missions.stars); });
+    // подписи всплывающих меток по виду ускорителя
+    const LABEL = {};
+    for (const p of POWER) LABEL[p.kind] = p.label;
+    const KINDS = (cfg && cfg.power && cfg.power.kinds) || ["magnet", "shield", "boost", "x2"];
+
+    bus.on("title", () => {
+      call("show", "title"); call("setBest", G.best || 0);
+      if (missions && missions.stars != null) call("setStars", missions.stars);
+      call("setWallet", G.wallet || 0); call("setUpgrades", G.upgrades);
+      // фоторежим: &shop=1 — открыть карточку «Прокачка» для кадра
+      if (qp && qp.has && qp.has("shot") && qp.get("shop") === "1") call("openShop");
+    });
     bus.on("start", () => {
       call("show", "play");
       call("setEnergons", 0, { instant:true });
@@ -90,16 +115,31 @@ export default {
     bus.on("combo:tier", n => call("setCombo", n, 0));
     bus.on("milestone", m => call("milestone", m));
     bus.on("hit", () => call("popLabel", "ОЙ!", "warn"));
+    bus.on("powerup", p => { if (p && p.on) call("popLabel", LABEL[p.kind] || "БОНУС!", "big"); });
+    bus.on("shield:break", () => call("popLabel", "ЩИТ ПРИНЯЛ УДАР", "info"));
+    bus.on("wallet", p => { if (p) call("setWallet", p.total); });
+    bus.on("upgrade", () => call("setUpgrades", G.upgrades));
     bus.on("gameover", p => {
-      const stats = { dist: Math.round(G.dist), energons: G.energons, isBest: !!(p && p.isBest), best: G.best };
+      const stats = { dist: Math.round(G.dist), energons: G.energons, bonus: G.bonusEnergons, isBest: !!(p && p.isBest), best: G.best,
+        wallet: p && p.wallet, revive: p && p.revive };
       if (has("results")) { try { hud.results(stats); } catch(e){ call("show", "results"); } }
       else call("show", "results");
     });
+    // «Продолжить»: карточка результатов уходит, отсчёт 3-2-1 рисует HUD (после паузы отсчёт показывает базовый #cd)
+    bus.on("revive", () => { call("show", "play"); call("setEnergons", G.energons, { instant:true }); });
+    bus.on("countdown", n => { if (hud.screen === "play") call("countdown", n); });
+    bus.on("resume", () => { if (hud.screen === "play") call("go"); });
     bus.on("pause", b => call("show", b ? "pause" : "play"));
 
     function update(realDt){
       call("setDistance", G.dist);
       call("setDanger", G.danger || 0);
+      if (G.powers && has("setPowerup")){
+        for (let i = 0; i < KINDS.length; i++){
+          const k = KINDS[i], t = G.powers[k], d = G.powerDur ? G.powerDur[k] : 0;
+          hud.setPowerup(k, t > 0 && d > 0 ? t / d : 0);
+        }
+      }
       if (has("update")) { try { hud.update(realDt); } catch(e){} }
     }
     return {

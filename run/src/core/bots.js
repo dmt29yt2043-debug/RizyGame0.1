@@ -3,6 +3,7 @@
 
 export function createBots({ cfg, G, entities, doAction, makeRng }){
   const { obstacles, coins } = entities;
+  const powerups = entities.powerups || [];
   const FREE = 0, JUMP = 1, SLIDE = 2, WALL = 3;
   const row1 = [0, 0, 0], row2 = [0, 0, 0];
   const pad = k => cfg.zLen[k] / 2 + cfg.hitPad;
@@ -48,9 +49,11 @@ export function createBots({ cfg, G, entities, doAction, makeRng }){
         if (c < c2) c2 = c;
       }
       if (c2 === Infinity) c2 = 50;
-      // энергоны впереди тянут в свою полосу
+      // энергоны впереди тянут в свою полосу; ускоритель — сильнее, но не сильнее смены полосы (1.0):
+      // бот берёт его, если он в своей полосе или полосы равноценны, и никогда ради него не рискует
       let bonus = 0;
       for (let i = 0; i < coins.length; i++){ const c = coins[i]; if (c.lane === l1 && c.z > -22 && c.z < 0.5) bonus += 0.08; }
+      for (let i = 0; i < powerups.length; i++){ const p = powerups[i]; if (p.lane === l1 && p.z > -40 && p.z < 0.5) bonus += 0.5; }
       const cost = c1 + c2 - Math.min(0.6, bonus);
       if (cost < bestCost - 1e-6){ bestCost = cost; best = l1; }
     }

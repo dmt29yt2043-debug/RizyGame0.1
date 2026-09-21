@@ -22,7 +22,8 @@
 //   danger     0..1, > 0 — оглядки на рой
 //
 // opts: prefer, url (GLB, по умолчанию run/assets/rizy.glb), scale (0.93), height (GLB, 2.08 м),
-//       sunDir (Vector3 мира; иначе ищется DirectionalLight в ctx.scene), driveRoot (true), reducedMotion, noScarf,
+//       sunDir (Vector3 мира; иначе ищется DirectionalLight в ctx.scene), driveRoot (true), reducedMotion,
+//       scarf (false: на мастер-листе шарфа нет; true — verlet-лента, +1 draw call), backpack (false, процедурная),
 //       blobShadow (по умолчанию true на low, где карт теней нет: мягкое пятно под ногами, +1 draw call)
 //
 // prefer:"auto" (по умолчанию) — процедурная модель. GLB берётся, только если рядом лежит манифест
@@ -88,10 +89,12 @@ export async function createRizy(ctx, opts = {}){
   for (const m of rig.rimTargets.hair) patchRim(m, rimHair, rig.sunU);
   if (rig.rimTargets.face) patchRim(rig.rimTargets.face, null, rig.sunU, FACE_SHINE);
 
-  // шарф: лента (процедурная / GLB без костей шарфа) или только симуляция для костей GLB
+  // шарф: только по opts.scarf (у GLB с костями шарфа — всегда, иначе кости повиснут). Лента (процедурная /
+  // GLB без костей шарфа) или только симуляция для костей GLB
   let scarf = null, scarfMat = null;
   const LOW = ctx.quality === "low", HIGH = ctx.quality === "high";
-  if (!opts.noScarf && rig.anchors){
+  const wantScarf = !opts.noScarf && (opts.scarf === true || !!rig.scarfBones);
+  if (wantScarf && rig.anchors){
     if (!rig.scarfBones){
       scarfMat = LOW ? new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.85, side: THREE.DoubleSide })
                      : new THREE.MeshPhysicalMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.82, sheen: 1, sheenRoughness: 0.6,

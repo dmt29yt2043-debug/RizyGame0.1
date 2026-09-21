@@ -13,7 +13,9 @@ const LANESET = [[[0], [0, 1], [0, 1, 2]], [null, [1], [1, 2]], [null, null, [2]
 for (const row of LANESET) for (const a of row) if (a) Object.freeze(a);
 export const laneSet = (a, b) => LANESET[a][b];
 
-export function createDirector({ cfg, G, rng, addObstacle, addCoin }){
+export function createDirector({ cfg, G, rng, addObstacle, addCoin, addPowerup }){
+  const PW = cfg.power || { kinds: ["magnet", "shield", "boost", "x2"], firstS: 180, gap: [350, 600] };
+  const PKIND = PW.kinds;
   const rnd = (a, b) => a + rng() * (b - a);
   const irnd = n => Math.floor(rng() * n);
   const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
@@ -42,6 +44,10 @@ export function createDirector({ cfg, G, rng, addObstacle, addCoin }){
     const it = item(); it.type = 2; it.a = lane; it.x = x; it.y = y; it.s = s; it.arc = arc || 0; it.arcN = arcN || 0;
     push(it);
   }
+  function power(kind, lane, s){
+    const it = item(); it.type = 3; it.kind = kind; it.a = lane; it.b = lane; it.s = s;
+    push(it);
+  }
 
   // ---------- состояние ----------
   const st = {
@@ -49,6 +55,7 @@ export function createDirector({ cfg, G, rng, addObstacle, addCoin }){
     lastBreatherS: -1e9, breatherReq: false, mercyUntilT: -1, lastTier: 0,
     tutorial: null,                        // сценарий первого забега (см. startTutorial)
     endS: 0,                               // дальний край последнего сгенерированного паттерна
+    nextPowerS: PW.firstS, lastPower: -1, powerups: 0,   // ускорители: следующая дистанция, последний вид, выдано
   };
   // занятые клетки последних рядов (для проверки энергонов): [s, c0, c1, c2] × RING
   const RING = 24, occ = new Float32Array(RING * 4); let occN = 0;
@@ -161,6 +168,23 @@ export function createDirector({ cfg, G, rng, addObstacle, addCoin }){
     }
   }
 
+  // ускоритель в свободном отрезке [s0, s1] (между рядами никогда: ставим только в промежутки и передышки).
+  // Полоса случайная, но не «в ряду» с препятствием той же полосы (проверка по кольцу занятых клеток).
+  // Возвращает s ускорителя или −1, если сейчас не время (следующий по плану дальше s1).
+  function powerIn(s0, s1){
+    if (!addPowerup || st.nextPowerS > s1 || s1 - s0 < 10) return -1;
+    const ps = Math.max(s0 + 5, Math.min(s1 - 5, (s0 + s1) * 0.5));
+    let lane = irnd(3), ok = false;
+    for (let k = 0; k < 3; k++){ const l = (lane + k) % 3; if (!blocked(l, ps, 6)){ lane = l; ok = true; break; } }
+    if (!ok) return -1;
+    let kind = irnd(PKIND.length);
+    if (kind === st.lastPower) kind = (kind + 1) % PKIND.length;
+    st.lastPower = kind; st.powerups++;
+    power(kind, lane, ps);
+    st.nextPowerS = ps + rnd(PW.gap[0], PW.gap[1]);
+    return ps;
+  }
+
   // ---------- паттерны ----------
   function genPattern(){
     const t = G.runT, sp = planSpeed(), d = difficulty(t);
@@ -174,6 +198,7 @@ export function createDirector({ cfg, G, rng, addObstacle, addCoin }){
       const len = clamp(cfg.breather.sec * sp, cfg.breather.min, cfg.breather.max);
       coinsFill(s, s + len * 0.5);
       coinsFill(s + len * 0.5 + 4, s + len - 4);
+      powerIn(s + len * 0.5 - 2, s + len * 0.5 + 6);   // в 4-метровом «окне» между двумя линиями энергонов
       st.lastBreatherS = s; st.lastTier = 0; st.endS = s + len;
       st.nextS = s + len;
       return;
@@ -212,8 +237,11 @@ export function createDirector({ cfg, G, rng, addObstacle, addCoin }){
     const gapM = Math.max(cfg.gapMinM, gapSec * sp);
     st.endS = sEnd;
     st.nextS = sEnd + gapM;
-    // энергоны в промежутке между паттернами (полсекунды отступа от рядов)
-    if (rng() < 0.7) coinsFill(sEnd + Math.max(6, sp * 0.5), st.nextS - Math.max(6, sp * 0.5));
+    // ускоритель — посреди промежутка; энергоны в промежутке между паттернами (полсекунды отступа от рядов),
+    // при ускорителе линия укорачивается до него, чтобы пикап не стоял в ряду энергонов
+    const g0 = sEnd + Math.max(6, sp * 0.5), g1 = st.nextS - Math.max(6, sp * 0.5);
+    const ps = powerIn(sEnd + 6, st.nextS - 6);
+    if (rng() < 0.7) coinsFill(g0, ps > 0 ? Math.min(g1, ps - 3) : g1);
   }
 
   // ---------- сценарий обучения (GAME-7) ----------
@@ -251,6 +279,7 @@ export function createDirector({ cfg, G, rng, addObstacle, addCoin }){
     st.nextS = cfg.firstObstacleS; st.patterns = 0; st.rowId = 0; st.arcId = 0;
     st.lastBreatherS = -1e9; st.breatherReq = false; st.mercyUntilT = -1; st.lastTier = 0; st.endS = 0;
     st.tutorial = null; occN = 0;
+    st.nextPowerS = PW.firstS; st.lastPower = -1; st.powerups = 0;
     if (tutorial) startTutorial();
   }
 
@@ -262,6 +291,7 @@ export function createDirector({ cfg, G, rng, addObstacle, addCoin }){
       const it = queue.shift();
       const z = G.dist - it.s;
       if (it.type === 1) addObstacle(KIND[it.kind], LANESET[it.a][it.b], z, it.s, it.row, it.tier);
+      else if (it.type === 3) addPowerup(PKIND[it.kind], it.a, z, it.s);
       else addCoin(it.a, it.x, it.y, z, it.s, it.arc, it.arcN);
       pool.push(it);
     }

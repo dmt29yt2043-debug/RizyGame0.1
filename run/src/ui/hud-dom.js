@@ -1,5 +1,6 @@
 // Разметка HUD: строим DOM один раз и возвращаем ссылки R. Никаких ссылок на index.html.
-import { gemSVG, pauseSVG, playSVG, retrySVG, gearSVG, checkSVG, swarmSVG, handSVG, snowflakeSVG, trophySVG, starSVG, heartSVG } from "./icons.js";
+import { gemSVG, pauseSVG, playSVG, retrySVG, gearSVG, checkSVG, swarmSVG, handSVG, snowflakeSVG, trophySVG, starSVG, heartSVG, POWER_SVG } from "./icons.js";
+import { POWER, TXT } from "./text.js";
 
 export const RING_R = 26;
 export const RING_C = 2 * Math.PI * RING_R;
@@ -51,6 +52,8 @@ export function buildDOM(root, { touch }) {
           <div class="rz-wave"></div>
         </div></div>
       </div>
+      <div class="rz-pw">${POWER.map(p => `<div class="rz-pw-chip" data-kind="${p.kind}" hidden>
+        <div class="rz-pw-ico">${POWER_SVG[p.kind]}</div><div class="rz-pw-bar"><i></i></div></div>`).join("")}</div>
     </div>
     <div class="rz-swarm">
       <div class="rz-swarm-lbl">РОЙ БЛИЗКО!</div>
@@ -73,6 +76,8 @@ export function buildDOM(root, { touch }) {
   R.ringFill = q(".rz-ring-fill", R.play); R.wave = q(".rz-wave", R.play);
   R.swarm = q(".rz-swarm", R.play); R.swarmFill = q(".rz-swarm-fill", R.play);
   R.tl = q(".rz-tl", R.play); R.tr = q(".rz-tr", R.play);
+  R.pw = {};
+  for (const p of POWER){ const el = q(`.rz-pw-chip[data-kind=${p.kind}]`, R.play); R.pw[p.kind] = { el, bar: q(".rz-pw-bar > i", el) }; }
 
   // ---------- ТИТУЛ ----------
   R.title = h(`<div class="rz-scr rz-title" hidden>
@@ -88,6 +93,8 @@ export function buildDOM(root, { touch }) {
       <div class="rz-chips">
         <div class="rz-chip">${trophySVG}<span>Рекорд</span><b class="rz-t-best"></b><span>м</span></div>
         <div class="rz-chip rz-chip-stars">${starSVG(true)}<span>Звёзды:</span><b class="rz-t-stars"></b></div>
+        <div class="rz-chip rz-chip-wallet">${gemSVG()}<b class="rz-t-wallet"></b></div>
+        <button class="rz-btn ghost rz-shop-btn" data-act="shop">${POWER_SVG.boost}<span>${TXT.shop}</span></button>
       </div>
       ${touch ? "" : `<div class="rz-keys">← → полоса · ↑ прыжок · ↓ подкат · Esc пауза</div>`}
     </div>
@@ -95,6 +102,33 @@ export function buildDOM(root, { touch }) {
   root.appendChild(R.title);
   R.logo = q(".rz-logo", R.title); R.prompt = q(".rz-prompt", R.title); R.titleBot = q(".rz-title-bot", R.title);
   R.tBest = q(".rz-t-best", R.title); R.tStars = q(".rz-t-stars", R.title); R.gear = q(".rz-gear", R.title);
+  R.tWallet = q(".rz-t-wallet", R.title); R.shopBtn = q(".rz-shop-btn", R.title);
+
+  // ---------- ПРОКАЧКА (ECON): карточка магазина поверх титула ----------
+  R.shop = h(`<div class="rz-scr rz-shop" hidden>
+    <div class="rz-shade"></div>
+    <div class="rz-center"><div class="rz-card rz-shop-card" role="dialog" aria-label="${TXT.shop}">
+      <div class="rz-card-head"><div><span>${TXT.shop}</span></div></div>
+      <div class="rz-shop-wallet">${gemSVG()}<span>${TXT.shopHave}</span><b class="rz-s-wallet"></b></div>
+      <div class="rz-shop-list">${POWER.map(p => `<div class="rz-shop-row" data-kind="${p.kind}">
+        <div class="rz-shop-ico">${POWER_SVG[p.kind]}</div>
+        <div class="rz-shop-txt"><b>${p.name}</b><span class="desc">${p.desc}</span>
+          <span class="rz-shop-lv"><i></i><i></i><i></i></span></div>
+        <div class="rz-shop-val"><span class="cur"></span><span class="arr">→</span><span class="nxt"></span></div>
+        <button class="rz-btn rz-shop-buy" data-buy="${p.kind}">${gemSVG()}<span class="p"></span></button>
+      </div>`).join("")}</div>
+      <button class="rz-btn main wide" data-act="shop:close">Готово</button>
+    </div></div>
+  </div>`);
+  root.appendChild(R.shop);
+  R.shopShade = q(".rz-shade", R.shop); R.shopCard = q(".rz-card", R.shop); R.sWallet = q(".rz-s-wallet", R.shop);
+  R.shopClose = q("[data-act='shop:close']", R.shop);
+  R.shopRows = {};
+  for (const p of POWER){
+    const row = q(`.rz-shop-row[data-kind=${p.kind}]`, R.shop);
+    R.shopRows[p.kind] = { row, lv: [...row.querySelectorAll(".rz-shop-lv > i")], cur: q(".cur", row), arr: q(".arr", row), nxt: q(".nxt", row),
+      btn: q(".rz-shop-buy", row), price: q(".rz-shop-buy .p", row) };
+  }
 
   // ---------- ПАУЗА ----------
   R.pause = h(`<div class="rz-scr rz-pause" hidden>
@@ -127,19 +161,26 @@ export function buildDOM(root, { touch }) {
       <div class="rz-rrow r-en"><div class="ico">${gemSVG()}</div><div class="lbl">Энергоны</div><div class="val"><span class="n"></span></div></div>
       <div class="rz-rrow r-bonus"><div class="ico">${starSVG(true)}</div><div class="lbl">Бонус ловкости</div><div class="val"><small>+</small><span class="n"></span></div></div>
       <div class="rz-rrow total"><div class="ico">${gemSVG()}</div><div class="lbl">Всего энергонов</div><div class="val"><span class="n"></span></div></div>
+      <div class="rz-wallet-line" hidden>${gemSVG()}<span></span></div>
       <div class="rz-best-line"><span>Рекорд: <b class="rz-r-best"></b> м</span><span class="hint"></span></div>
       <div class="rz-tip" hidden></div>
       <div class="rz-quip"><div class="ava">К</div><p></p></div>
       <div class="rz-mlist"></div>
       <div class="rz-res-btns">
-        <button class="rz-btn main" data-act="restart">${retrySVG}<span>Ещё раз!</span></button>
-        <button class="rz-btn ghost" data-act="menu">Меню</button>
+        <button class="rz-btn blue rz-cont" data-act="continue" hidden>${gemSVG()}<span class="rz-cont-txt"></span></button>
+        <div class="rz-cont-hint" hidden></div>
+        <div class="rz-res-row">
+          <button class="rz-btn main" data-act="restart">${retrySVG}<span>Ещё раз!</span></button>
+          <button class="rz-btn ghost" data-act="menu">Меню</button>
+        </div>
       </div>
       <div class="rz-streakchip" hidden></div>
     </div></div>
   </div>`);
   root.appendChild(R.results);
   const rs = R.results;
+  R.walletLine = q(".rz-wallet-line", rs); R.walletTxt = q(".rz-wallet-line > span", rs);
+  R.contBtn = q(".rz-cont", rs); R.contTxt = q(".rz-cont-txt", rs); R.contHint = q(".rz-cont-hint", rs);
   R.resShade = q(".rz-shade", rs); R.resCenter = q(".rz-center", rs); R.resCard = q(".rz-card", rs);
   R.resHead = q(".rz-res-head", rs); R.resHeadBox = q(".rz-card-head > div", rs); R.stamp = q(".rz-stamp", rs);
   R.rDist = q(".r-dist", rs); R.rEn = q(".r-en", rs); R.rBonus = q(".r-bonus", rs); R.rTotal = q(".total", rs);

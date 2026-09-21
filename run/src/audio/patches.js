@@ -391,6 +391,27 @@ function dive(sr, rng){
   return fadeEdges(b, sr, 12);
 }
 
+// ---------- УСКОРИТЕЛИ ----------
+// подбор: быстрое восходящее арпеджио лестницы D5→F#6 (50 мс) + колокольчик A6; вид бонуса меняет playbackRate
+function powerup(sr, rng){
+  const b = ladderArp(sr, rng, [H.D5, H.Fs5, H.A5, H.D6, H.Fs6], 0.05, 0.15, 0.5, 0.06);
+  bellInto(b, sr, H.A6, 0.25, 0.06, 0.8);
+  return fadeEdges(b, sr);
+}
+// окончание: два нисходящих тона маримбы A5 → D5
+function powerdown(sr, rng){
+  const b = buf(sr, 0.75);
+  marimbaInto(b, sr, rng, H.A5, 0, 0.16); marimbaInto(b, sr, rng, H.D5, 0.14, 0.16, 0.55);
+  return fadeEdges(b, sr);
+}
+// щит принял удар: стеклянный «хлоп» (шум HP 2.5 кГц 60 мс) + два колокольчика D6 / B6
+function shieldPop(sr, rng){
+  const b = buf(sr, 0.6), hp = new Biquad("hp", sr).set(2500, 0.8), hp2 = new Biquad("hp", sr).set(2500, 0.8);
+  for (let i = 0; i < b.length; i++){ const t = i / sr; b[i] = hp2.run(hp.run(rng() * 2 - 1)) * 1.4 * env(t, 0.001, 0.06); }
+  bellInto(b, sr, H.D6, 0.0, 0.08, 0.4); bellInto(b, sr, 1975.53, 0.03, 0.05, 0.35);
+  return fadeEdges(b, sr).map(v => v * 0.4);   // пик ≈ 0.65 — под потолком лимитера
+}
+
 // ---------- БАНК ----------
 // Генератор по шагам: prepare() в index.js крутит его кусками по ~8 мс между кадрами загрузки,
 // unlock() в жесте только добивает остаток. Порядок вызовов rng фиксирован → буферы бит в бит те же.
@@ -422,6 +443,8 @@ export function* bankSteps(sr, B){
   B.tick = LADDER_HZ.map((_, s) => tick(sr, r, s));
   B.count = [0, 1, 2, 3].map(n => count(sr, r, n)); yield;
   B.dive = dive(sr, r);
+  // ускорители — в конце, чтобы порядок rng прежних буферов не сдвинулся (бит в бит те же)
+  B.powerup = powerup(sr, r); B.powerdown = powerdown(sr, r); B.shieldPop = shieldPop(sr, r); yield;
   // зацикленный розовый шум ветра 2 с, шов петли — кроссфейд 50 мс
   const pr = pinkGen(makeRng(99)), pn = new Float32Array(sr * 2);
   for (let i = 0; i < pn.length; i++) pn[i] = pr();

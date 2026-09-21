@@ -45,4 +45,20 @@ export const TXT = {
   go: "ВПЕРЁД!",
   praise: "Отлично!",
   tutDone: "Разминка пройдена — дальше по-настоящему!",
+  // экономика: «Продолжить», кошелёк, магазин
+  cont: price => `Продолжить за ${price}`,
+  contNo: (have, price) => `Не хватает энергонов: ${have} из ${price}`,
+  walletLine: (earned, total) => `+${earned} за забег · всего ${total}`,
+  shop: "Прокачка",
+  shopHave: "У тебя",
+  shopMax: "МАКС",
+  sec: n => `${n} с`,
 };
+
+// ускорители: порядок и подписи магазина/HUD (kind совпадает с cfg.power.kinds)
+export const POWER = [
+  { kind: "magnet", name: "Магнит",     desc: "Энергоны со всех дорожек летят к Ризи", label: "МАГНИТ!" },
+  { kind: "shield", name: "Щит",        desc: "Один удар — бесплатно, рой не догонит",  label: "ЩИТ!" },
+  { kind: "boost",  name: "Ускоритель", desc: "Полёт над препятствиями, энергоны ×2",   label: "УСКОРЕНИЕ!" },
+  { kind: "x2",     name: "Множитель",  desc: "Каждый энергон считается за два",        label: "×2!" },
+];

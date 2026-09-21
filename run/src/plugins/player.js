@@ -40,6 +40,8 @@ export default {
     bus.on("start", () => { S.celebrate = false; try { rizy.reset(); } catch(e){} });
     bus.on("title", () => { S.celebrate = false; try { rizy.reset(); } catch(e){} });
     bus.on("revive", () => { try { rizy.reset(); } catch(e){} });
+    // буст: взлёт с сальто; в полёте кит держит позу прыжка по S.py/S.vy (py ≈ 1.6, vy = 0), посадку даёт land
+    bus.on("boost", on => { if (on) T("jump", { flip:true }); });
     bus.on("settings", () => { try { rizy.setReducedMotion(!!G.reducedMotion); } catch(e){} });
 
     function update(realDt, pctx, simDt){

@@ -137,6 +137,20 @@
 .rz-mis-done { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; gap:10px; color:var(--ink); font-size:22px; opacity:0; }
 .rz-mis-done .rz-check { width:28px; height:28px; }
 
+/* ---------- ИГРА: активные ускорители (POWER) — чипы под комбо, полоска убывает ---------- */
+.rz-pw { display:flex; flex-direction:column; align-items:flex-end; gap:6px; margin-right:2px; }
+.rz-pw-chip { --pw:#0536D4; display:flex; align-items:center; gap:6px; height:34px; padding:0 8px 0 4px; border-radius:999px;
+  background:rgba(7,13,54,.8); border:2.5px solid var(--ink); box-shadow:0 3px 0 var(--ink); opacity:0; }
+.rz-pw-chip[data-kind=magnet] { --pw:#3C74FF; } .rz-pw-chip[data-kind=shield] { --pw:#7FD4FF; }
+.rz-pw-chip[data-kind=boost] { --pw:#C0FF3F; } .rz-pw-chip[data-kind=x2] { --pw:#FF7EB6; }
+.rz-pw-ico { width:26px; height:26px; flex:none; }
+.rz-pw-bar { position:relative; width:84px; height:10px; border-radius:10px; background:rgba(255,255,255,.14); overflow:hidden; }
+.rz-pw-bar > i { position:absolute; inset:0; border-radius:10px; background:var(--pw); transform-origin:0 50%; transform:scaleX(1); }
+.rz-pw-chip.low .rz-pw-bar > i { animation:rz-pw-blink .5s steps(2,start) infinite; }
+@keyframes rz-pw-blink { to { opacity:.35; } }
+.rz-hud.rz-rm .rz-pw-chip.low .rz-pw-bar > i { animation:none; }
+.rz-portrait .rz-pw-bar { width:64px; }
+
 /* ---------- ИГРА: рой (низ по центру) и края опасности ---------- */
 .rz-danger { position:absolute; inset:0; opacity:0; will-change:opacity;
   background:radial-gradient(ellipse 75% 70% at 50% 48%, rgba(255,36,54,0) 50%, rgba(255,36,54,.5) 80%, rgba(190,0,30,.9) 100%);
@@ -246,6 +260,40 @@
 .rz-chip b { color:var(--lime); display:inline-flex; font-weight:900; }
 .rz-keys { font-size:15px; font-weight:800; color:rgba(255,255,255,.9); -webkit-text-stroke:3px var(--ink); paint-order:stroke fill; }
 .rz-gear { position:absolute; right:var(--right); top:var(--top); }
+/* кошелёк и кнопка «Прокачка» в ряду чипов титула */
+.rz-chip-wallet b { font-size:21px; }
+.rz-hud .rz-shop-btn { min-height:44px; font-size:18px; padding:0 16px 0 10px; gap:6px; border-radius:999px;
+  color:var(--ink); background:linear-gradient(#EDFFB8,#C0FF3F 55%,#9FDF18); }
+.rz-hud .rz-shop-btn > svg { width:28px; height:28px; }
+
+/* ---------- ПРОКАЧКА (ECON) ---------- */
+.rz-shop-card { width:min(480px, 100%); display:flex; flex-direction:column; gap:10px; }
+.rz-shop-wallet { align-self:center; display:flex; align-items:center; gap:6px; padding:5px 14px 6px 6px; border-radius:999px; font-size:17px;
+  color:#fff; background:linear-gradient(#3C74FF,#0536D4); border:3px solid var(--ink); box-shadow:inset 0 2px 0 rgba(255,255,255,.35), 0 3px 0 var(--ink); }
+.rz-shop-wallet > svg { width:28px; height:28px; }
+.rz-shop-wallet b { color:var(--lime); font-size:20px; display:inline-flex; }
+.rz-shop-list { display:flex; flex-direction:column; gap:8px; }
+.rz-shop-row { display:grid; grid-template-columns:44px 1fr auto auto; align-items:center; gap:10px; min-height:64px; padding:6px 8px 6px 8px;
+  border-radius:16px; background:#fff; border:3px solid rgba(7,13,54,.1); box-shadow:inset 0 -3px 0 rgba(42,60,154,.08); }
+.rz-shop-row.max { background:linear-gradient(#EDFFB8,#D9FF8A); border-color:rgba(7,13,54,.18); }
+.rz-shop-ico { width:44px; height:44px; }
+.rz-shop-txt { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.rz-shop-txt b { font-size:18px; color:var(--ink); }
+.rz-shop-txt .desc { font-size:12.5px; font-weight:800; color:var(--shade); line-height:1.15; }
+.rz-shop-lv { display:flex; gap:3px; margin-top:1px; }
+.rz-shop-lv > i { width:16px; height:6px; border-radius:6px; background:#DCE5FF; border:1.5px solid rgba(7,13,54,.25); }
+.rz-shop-lv > i.on { background:var(--lime); border-color:var(--ink); }
+.rz-shop-val { display:flex; align-items:baseline; gap:5px; font-size:16px; color:var(--shade); white-space:nowrap; }
+.rz-shop-val .nxt { color:var(--blue); font-size:18px; }
+.rz-shop-row.max .rz-shop-val .nxt { color:var(--ink); }
+.rz-hud .rz-shop-buy { min-height:44px; padding:0 12px 0 6px; gap:4px; font-size:18px; border-radius:14px; }
+.rz-hud .rz-shop-buy > svg { width:28px; height:28px; }
+.rz-hud .rz-shop-buy.poor { color:var(--shade); background:linear-gradient(#fff,#E3EAFF); }
+.rz-hud .rz-btn[disabled] { pointer-events:none; opacity:.55; filter:saturate(.4); box-shadow:inset 0 3px 0 rgba(255,255,255,.65), 0 3px 0 var(--ink); }
+.rz-portrait .rz-shop-row { grid-template-columns:36px 1fr auto; gap:8px; min-height:58px; }
+.rz-portrait .rz-shop-ico { width:36px; height:36px; }
+.rz-portrait .rz-shop-val { display:none; }
+.rz-portrait .rz-shop-txt .desc { display:none; }
 
 /* ---------- ПАУЗА и РЕЗУЛЬТАТЫ: оверлей и карточка ---------- */
 .rz-shade { position:absolute; inset:0; background:rgba(7,13,54,.45); opacity:0; pointer-events:auto; }
@@ -347,8 +395,17 @@
 .rz-mlist div { display:flex; align-items:center; gap:6px; }
 .rz-mlist .rz-check { width:18px; height:18px; }
 .rz-mlist .rz-check path { stroke-dashoffset:0; }
-.rz-res-btns { display:grid; grid-template-columns:1fr auto; gap:10px; margin-top:6px; opacity:0; }
+.rz-res-btns { display:flex; flex-direction:column; gap:8px; margin-top:6px; opacity:0; }
+.rz-res-row { display:grid; grid-template-columns:1fr auto; gap:10px; }
 .rz-res-btns .rz-btn.main { min-height:62px; font-size:28px; }
+/* ECON: «Продолжить за N ⬡» и строка кошелька */
+.rz-hud .rz-cont { width:100%; min-height:56px; font-size:22px; gap:6px; }
+.rz-hud .rz-cont > svg { width:32px; height:32px; }
+.rz-hud .rz-cont.dim { opacity:.6; filter:saturate(.35); }
+.rz-cont-hint { text-align:center; font-size:13.5px; font-weight:800; color:var(--hazard); margin-top:-2px; }
+.rz-wallet-line { display:flex; align-items:center; justify-content:center; gap:6px; padding:2px 6px 0; font-size:16px; font-weight:800; color:var(--shade); opacity:0; }
+.rz-wallet-line > svg { width:24px; height:24px; }
+@media (max-height:600px) { .rz-hud .rz-cont { min-height:48px; font-size:19px; } }
 .rz-stamp { position:absolute; left:50%; top:0; width:0; height:0; opacity:0; z-index:3; pointer-events:none; }
 .rz-stamp > div { position:absolute; left:0; top:0; transform:translate(-50%,-50%); padding:9px 22px 11px; font-size:30px; color:#fff; border-radius:12px; background:var(--hazard); white-space:nowrap;
   border:4px solid var(--ink); box-shadow:inset 0 0 0 3px rgba(255,255,255,.75), 0 5px 0 var(--ink); }

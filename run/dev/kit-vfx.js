@@ -162,7 +162,7 @@ if (EMITS.includes("nearmiss")){
 }
 // магнит: энергон на лету к груди
 let flyer = null;
-if (EMITS.includes("magnet")){ flyer = add(crystalG, crystalM, 0.42, 1.15, -1.9, scene, false); flyer.scale.set(0.8, 1.2, 0.8); }
+if (EMITS.includes("magnet")){ flyer = add(crystalG, crystalM, 1.15, 1.25, -4.6, scene, false); flyer.scale.set(0.8, 1.2, 0.8); }
 
 // ---------- VFX ----------
 // конфетти шагает из vfx.update(realDt) (как в игре) — свой rAF киту не нужен ни здесь, ни в плагине
@@ -194,7 +194,7 @@ const opts = { big: qp.get("big") === "1", side: SIDE, dir: num("dir", 1), impac
 const chest = { x: 0, y: 1.15, z: -0.1 };
 // как авто-цель кита: грудь (0, 1.25, 0), сдвинутая на 0.5 м по лучу к камере (toCam)
 const magnetTarget = { x: 0, y: 1.30, z: 0.47 };
-const COIN0 = new THREE.Vector3(0.42, 1.15, -1.9);   // откуда летит энергон в сценарии magnet
+const COIN0 = new THREE.Vector3(1.15, 1.25, -4.6);   // откуда летит энергон: реальная дистанция притяжения (~5 м)
 const step = 1 / 60;
 let emitted = 0, runPhase = 0;
 

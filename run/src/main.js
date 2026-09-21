@@ -133,8 +133,20 @@ const G = {
   mission:{ id:"", kind:"", text:"", goal:0, progress:0, done:false, index:0 },
   tutorial:{ active:false, step:0, phase:"", action:"" },
   reducedMotion:reducedMotionNow(), calm:!!settings.calm, inputKind:"keys",
+  // экономика (ECON) и ускорители (POWER): кошелёк между забегами, уровни прокачки, таймеры активных бонусов (с)
+  wallet:0, upgrades:{ magnet:0, shield:0, boost:0, x2:0 },
+  powers:{ magnet:0, shield:0, boost:0, x2:0 }, powerDur:{ magnet:0, shield:0, boost:0, x2:0 },
+  flying:false, boostK:0,
 };
 try { G.best = +localStorage.getItem(cfg.bestKey) || 0; } catch(e){}
+const PWR = cfg.power;
+const wallet = { total:0 };
+try { wallet.total = Math.max(0, Math.floor(+localStorage.getItem(cfg.walletKey) || 0)); } catch(e){}
+try {
+  const u = JSON.parse(localStorage.getItem(cfg.upgradesKey) || "{}") || {};
+  for (let i = 0; i < PWR.kinds.length; i++){ const k = PWR.kinds[i]; G.upgrades[k] = clamp(u[k] | 0, 0, PWR.prices.length); }
+} catch(e){}
+G.wallet = wallet.total;
 if (mqReduced && mqReduced.addEventListener) mqReduced.addEventListener("change", () => { G.reducedMotion = reducedMotionNow(); });
 
 const bus = createBus();
@@ -180,7 +192,7 @@ const ctx = {
   G, cfg, bus, qp,
   quality: QUALITY,
   look: { mats:null, curve:null, post:null, patch: o => o, enabled: LOOK_ON },
-  entities: { obstacles: [], coins: [] },
+  entities: { obstacles: [], coins: [], powerups: [] },
   util: { rnd:U.rnd, pick:U.pick, clamp:U.clamp, lerp:U.lerp, damp:U.damp, canvasTex:U.canvasTex, makeRng:U.makeRng, ease:E },
   $,
   time: { t:0, dt:0, simT:0, simDt:0 },
@@ -189,10 +201,10 @@ const ctx = {
   simulating: false,                      // true во время sim()/предпрогона фоторежима
   actions: null,                          // заполняется ниже: start, pause, resume, revive, skipTutorial, toTitle, setSetting
 };
-const { obstacles, coins } = ctx.entities;
+const { obstacles, coins, powerups } = ctx.entities;
 
 // ---------- СТАТИСТИКА (для sim и ботов) ----------
-const stats = { hits:0, jumps:0, slides:0, laneChanges:0, nearMisses:0, missions:0, passed:{ jump:0, slide:0, wall:0 }, hitLog:[] };
+const stats = { hits:0, shieldHits:0, powerups:0, jumps:0, slides:0, laneChanges:0, nearMisses:0, missions:0, passed:{ jump:0, slide:0, wall:0 }, hitLog:[] };
 let nextMilestone = cfg.milestoneStep;
 let entId = 0, recordDone = false;
 
@@ -206,6 +218,32 @@ const P_tut = { n:0, phase:"", action:"", text:"" };
 const P_catch = { dist:0, obstacle:null };
 const P_frame = { dt:0, realDt:0, simDt:0 };
 const P_record = { best:0 };
+const P_power = { kind:"", on:false, dur:0 };     // dur < 0 — щит разбит ударом
+const P_wallet = { total:0, delta:0 };
+
+// ---------- КОШЕЛЁК И ПРОКАЧКА (ECON) ----------
+// Энергоны копятся между забегами (rizyrun_wallet); тратятся на «Продолжить» и уровни ускорителей (rizyrun_upgrades).
+function persistOK(){ return !ctx.simulating && !SHOT; }
+function walletAdd(n){
+  wallet.total = Math.max(0, Math.round(wallet.total + n)); G.wallet = wallet.total;
+  if (persistOK()) try { localStorage.setItem(cfg.walletKey, String(wallet.total)); } catch(e){}
+  P_wallet.total = wallet.total; P_wallet.delta = n;
+  bus.emit("wallet", P_wallet);
+}
+function upgradePrice(kind){ const lv = G.upgrades[kind] | 0; return lv < PWR.prices.length ? PWR.prices[lv] : 0; }
+function buyUpgrade(kind){
+  if (!(kind in G.upgrades) || G.mode !== "title") return false;
+  const lv = G.upgrades[kind] | 0;
+  if (lv >= PWR.prices.length) return false;
+  const price = PWR.prices[lv];
+  if (wallet.total < price) return false;
+  G.upgrades[kind] = lv + 1;
+  if (persistOK()) try { localStorage.setItem(cfg.upgradesKey, JSON.stringify(G.upgrades)); } catch(e){}
+  walletAdd(-price);
+  bus.emit("upgrade", { kind, level: lv + 1, price });   // покупка — редкое событие, аллокация допустима
+  return true;
+}
+function powerDur(kind){ const d = PWR.dur[kind]; return d[clamp(G.upgrades[kind] | 0, 0, d.length - 1)]; }
 
 // ---------- ЧАСЫ: timeScale = min(пауза, хит-стоп, слоу-мо поимки, micro-slow near-miss, туториал) ----------
 const clock = { hitStopT:-1, nearT:-1, catchT:-1, tutScale:1, shotForce:false, freezeSim:false };
@@ -266,6 +304,7 @@ function doAction(a, src){
   if (G.introT < ctl && src !== "bot" && !ctx.simulating) return;
 
   if (a === "LEFT" || a === "RIGHT") changeLane(a === "LEFT" ? -1 : 1);
+  else if (G.flying) return;                     // в полёте на ускорителе прыжок и подкат не нужны
   else if (a === "UP"){
     if (G.sliding > 0) G.sliding = 0;            // прыжок отменяет подкат
     if (grounded() || (G.py <= 0.01 && G.vy <= 0.01) || (groundT < cfg.coyote && !jumpedSinceGround && G.vy <= 0)) jump();
@@ -335,13 +374,65 @@ function addObstacle(kind, lanes, z, s, row, tier){
   if (e.object3d) e.object3d.position.z = e.z;
 }
 function addCoin(lane, x, y, z, s, arc, arcN){
-  const e = { id:++entId, lane, x: Number.isNaN(x) ? LANES[lane] : x, y, z, s, arc, arcN, object3d:null };
+  const e = { id:++entId, lane, x: Number.isNaN(x) ? LANES[lane] : x, y, z, s, arc, arcN, object3d:null, mag:false };
   coins.push(e);
   bus.emit("spawn:coin", e);
   if (e.object3d) e.object3d.position.z = e.z;
 }
+// ускоритель: парит на высоте PWR.y в своей полосе; препятствием не считается (боты и режиссёр его не видят)
+function addPowerup(kind, lane, z, s){
+  const e = { id:++entId, kind, lane, x: LANES[lane], y: PWR.y, z, s, object3d:null };
+  powerups.push(e);
+  bus.emit("spawn:powerup", e);
+  if (e.object3d) e.object3d.position.z = e.z;
+}
 
-const director = createDirector({ cfg, G, rng: rngProxy, addObstacle, addCoin });
+const director = createDirector({ cfg, G, rng: rngProxy, addObstacle, addCoin, addPowerup });
+
+// ---------- УСКОРИТЕЛИ (POWER) ----------
+// Таймеры независимы (магнит + ×2 складываются). Буст: скорость ×1.5 через boostK (0→1 за boostIn, 1→0 за boostOut),
+// полёт на flyY без физики прыжка, неуязвимость; на выходе — планирование вниз 3.5 м/с и grace без мигания.
+let baseSpeed = 0, boostK = 0, glideT = -1, graceBlink = true;
+function activatePower(kind){
+  if (!(kind in G.powers)) return false;
+  const dur = powerDur(kind);
+  G.powers[kind] = Math.max(G.powers[kind], dur); G.powerDur[kind] = dur;
+  stats.powerups++;
+  if (kind === "boost"){
+    G.flying = true; glideT = -1;
+    G.vy = 0; G.dive = false; G.sliding = 0; buf.jump = buf.slide = -1;
+    if (G.swarmNear > 0){ G.swarmNear = 0; bus.emit("swarm:far"); }
+    postSpike(0.25, 400);
+    bus.emit("boost", true);
+  }
+  P_power.kind = kind; P_power.on = true; P_power.dur = dur;
+  bus.emit("powerup", P_power);
+  return true;
+}
+function endPower(kind, broke){
+  G.powers[kind] = 0;
+  if (kind === "boost"){
+    G.flying = false; glideT = 0;
+    G.grace = Math.max(G.grace, PWR.boostGrace); graceBlink = false;
+    bus.emit("boost", false);
+  }
+  P_power.kind = kind; P_power.on = false; P_power.dur = broke ? -1 : 0;
+  bus.emit("powerup", P_power);
+}
+function clearPowers(){
+  for (let i = 0; i < PWR.kinds.length; i++){ const k = PWR.kinds[i]; if (G.powers[k] > 0) endPower(k, false); }
+  glideT = -1; boostK = 0; G.boostK = 0; G.flying = false;
+}
+function updatePowers(simDt){
+  const P = G.powers;
+  for (let i = 0; i < PWR.kinds.length; i++){
+    const k = PWR.kinds[i];
+    if (P[k] > 0){ P[k] -= simDt; if (P[k] <= 0){ P[k] = 0; endPower(k, false); } }
+  }
+  if (G.flying) boostK = Math.min(1, boostK + simDt / PWR.boostIn);
+  else if (boostK > 0) boostK = Math.max(0, boostK - simDt / PWR.boostOut);
+  G.boostK = boostK;
+}
 const missions = createMissions({ cfg, G, bus, persist: () => !ctx.simulating && !SHOT });
 
 // ---------- ТРАВМА / КОМБО ----------
@@ -374,17 +465,20 @@ function tutorialWanted(){
 function resetRunState(){
   for (let i = obstacles.length - 1; i >= 0; i--) removeEntity(obstacles, i);
   for (let i = coins.length - 1; i >= 0; i--) removeEntity(coins, i);
+  for (let i = powerups.length - 1; i >= 0; i--) removeEntity(powerups, i);
   Object.assign(G, { paused:false, countdown:0, dist:0, energons:0, bonusEnergons:0,
     lane:1, laneDir:0, laneFrom:0, laneTo:0, laneT:1, x:0, edgeX:0,
     py:0, vy:0, dive:false, sliding:0, land:0,
     speed:0, speedTarget:cfg.speedStart, runT:0, runPhase:0, introT:0, dz:0,
     grace:0, blinkOn:true, swarmNear:0, revives:0, catchT:0, overT:0,
-    combo:0, mult:1, comboIdleT:0, tunnel:0 });
+    combo:0, mult:1, comboIdleT:0, tunnel:0, flying:false, boostK:0 });
+  for (let i = 0; i < PWR.kinds.length; i++){ const k = PWR.kinds[i]; G.powers[k] = 0; G.powerDur[k] = 0; }
+  baseSpeed = 0; boostK = 0; glideT = -1; graceBlink = true; bankedRun = 0;
   G.nearMiss.count = 0; G.nearMiss.kind = ""; G.nearMiss.t = -9; G.nearMiss.obstacle = null;
   buf.jump = buf.slide = -1; groundT = 0; laneChangeT = -9; laneLeft = -1; slideStartT = -9; jumpedSinceGround = false;
   edge.t = -1; hitSlow.t = -1; arcTrack.id = 0; arcTrack.n = 0;
   clock.hitStopT = clock.nearT = -1; clock.tutScale = 1;
-  stats.hits = stats.jumps = stats.slides = stats.laneChanges = stats.nearMisses = stats.missions = 0;
+  stats.hits = stats.shieldHits = stats.powerups = stats.jumps = stats.slides = stats.laneChanges = stats.nearMisses = stats.missions = 0;
   stats.passed.jump = stats.passed.slide = stats.passed.wall = 0; stats.hitLog.length = 0;
   nextMilestone = cfg.milestoneStep; recordDone = false;
   postMood.over = 0;
@@ -441,12 +535,23 @@ const hitSlow = { t:-1, from:0, to:0 };
 function hit(o){
   o.touched = true;
   if (G.grace > 0) return;
-  G.grace = cfg.graceTime;
+  if (G.powers.shield > 0){
+    // щит поглощает ряд целиком: без страйка, роя, потери скорости и комбо; короткий grace без мигания
+    G.grace = PWR.shieldGrace; graceBlink = false;
+    stats.shieldHits++;
+    addTrauma(cfg.TRAUMA.near);
+    rig.kick("near");
+    postFlash(0x7FD4FF, 350);
+    endPower("shield", true);
+    bus.emit("shield:break", o);
+    return;
+  }
+  G.grace = cfg.graceTime; graceBlink = true;
   clock.hitStopT = 0;
   addTrauma(cfg.TRAUMA.hit);
   rig.kick("hit");
   postFlash(cfg.BRAND.danger, 450);
-  hitSlow.t = 0; hitSlow.from = G.speed; hitSlow.to = Math.max(cfg.hitSpeedMin, G.speed * cfg.hitSpeedMul);
+  hitSlow.t = 0; hitSlow.from = baseSpeed; hitSlow.to = Math.max(cfg.hitSpeedMin, baseSpeed * cfg.hitSpeedMul);
   if (G.mult > 1 || G.combo > 0){ G.combo = 0; updateTier(); }
   director.onHit();
   const tut = G.tutorial.active;                // в обучении проиграть нельзя: удар без «страйка»
@@ -463,6 +568,7 @@ let finalDist = 0;
 function startCatch(o){
   G.mode = "catch"; G.catchT = 0;
   finalDist = Math.floor(G.dist);
+  clearPowers();
   addTrauma(cfg.TRAUMA.catch);
   // облёт в сторону свободной полосы
   let freeDir = G.lane === 0 ? 1 : G.lane === 2 ? -1 : 1;
@@ -475,27 +581,33 @@ function startCatch(o){
   P_catch.dist = finalDist; P_catch.obstacle = o;
   bus.emit("catch", P_catch);
 }
+let bankedRun = 0;   // энергоны этого забега, уже зачисленные в кошелёк (после «Продолжить» забег идёт дальше)
 function gameOver(){
   G.mode = "over"; G.overT = 0;
   const d = finalDist;
   const isBest = d > G.best;
   if (isBest){
     G.best = d;
-    if (!ctx.simulating && !SHOT) try { localStorage.setItem(cfg.bestKey, String(d)); } catch(e){}
+    if (persistOK()) try { localStorage.setItem(cfg.bestKey, String(d)); } catch(e){}
   }
-  const price = cfg.revivePrice[Math.min(G.revives, cfg.revivePrice.length - 1)];
+  // кошелёк: энергоны + бонус ловкости за забег (в sim не трогаем; в фоторежиме — только в памяти)
+  const total = G.energons + G.bonusEnergons;
+  if (!ctx.simulating || SHOT){ walletAdd(Math.max(0, total - bankedRun)); bankedRun = total; }
+  const price = cfg.reviveCost;
   bus.emit("gameover", { dist:d, energons:G.energons, bonus:G.bonusEnergons, best:G.best, isBest,
-    revive:{ price, can: G.revives < 2 && G.energons >= price } });
+    revive:{ price, can: G.revives < cfg.reviveMax && wallet.total >= price, have: wallet.total, left: cfg.reviveMax - G.revives },
+    wallet:{ earned: total, total: wallet.total } });
 }
-// GAME-6: спасение за энергоны (зовёт HUD через ctx.actions.revive)
+// GAME-6 / ECON: «Продолжить за 100 ⬡» из кошелька, reviveMax раз за забег (зовёт HUD через ctx.actions.revive)
 function revive(){
-  if (G.mode !== "over" || G.revives >= 2) return false;
-  const price = cfg.revivePrice[Math.min(G.revives, cfg.revivePrice.length - 1)];
-  if (G.energons < price) return false;
-  G.energons -= price; G.revives++;
+  if (G.mode !== "over" || G.revives >= cfg.reviveMax) return false;
+  const price = cfg.reviveCost;
+  if (wallet.total < price) return false;
+  walletAdd(-price); G.revives++;
   G.swarmNear = 0; bus.emit("swarm:far");
-  G.grace = 3.0;
-  G.speed = Math.max(cfg.hitSpeedMin, G.speed * 0.85);
+  G.grace = 3.0; graceBlink = true;
+  baseSpeed = Math.max(cfg.hitSpeedMin, baseSpeed * 0.85); G.speed = baseSpeed;
+  G.py = 0; G.vy = 0; G.dive = false; G.sliding = 0;
   // ударная волна: всё ближе 30 м убираем
   for (let i = obstacles.length - 1; i >= 0; i--) if (obstacles[i].z > -30) removeEntity(obstacles, i);
   director.onHit();
@@ -518,15 +630,18 @@ function updateGame(simDt, realDt){
   const target = (tut ? cfg.tutorial.speed : director.targetSpeed(G.runT)) * calmK;
   G.speedTarget = target;
   const spPrev = Math.floor(G.speed);
-  if (G.runT < cfg.speedIntro && !(G.revives > 0)) G.speed = target * E.easeOutQuad(G.runT / cfg.speedIntro);
+  // базовая скорость (без буста): разгон / удар / догон цели; буст умножает её на 1 + 0.5·boostK
+  if (G.runT < cfg.speedIntro && !(G.revives > 0)) baseSpeed = target * E.easeOutQuad(G.runT / cfg.speedIntro);
   else if (hitSlow.t >= 0){
     hitSlow.t += simDt;
-    G.speed = lerp(hitSlow.from, hitSlow.to, E.easeOutQuad(hitSlow.t / cfg.hitSpeedDur));
+    baseSpeed = lerp(hitSlow.from, hitSlow.to, E.easeOutQuad(hitSlow.t / cfg.hitSpeedDur));
     if (hitSlow.t >= cfg.hitSpeedDur) hitSlow.t = -1;
   } else {
     const a = cfg.speedAccel * simDt;
-    G.speed = G.speed < target ? Math.min(target, G.speed + a) : Math.max(target, G.speed - a);
+    baseSpeed = baseSpeed < target ? Math.min(target, baseSpeed + a) : Math.max(target, baseSpeed - a);
   }
+  updatePowers(simDt);
+  G.speed = baseSpeed * (1 + (PWR.boostMul - 1) * boostK);
   if (Math.floor(G.speed) > spPrev && G.runT > cfg.speedIntro) bus.emit("speedup", G.speed);
 
   const dz = G.speed * simDt;
@@ -540,8 +655,8 @@ function updateGame(simDt, realDt){
     G.swarmNear -= simDt;
     if (G.swarmNear <= 0){ G.swarmNear = 0; bus.emit("swarm:far"); }
   }
-  // мигание неуязвимости: 10 Гц 1.2 с, затем 5 Гц 0.4 с, 70% кадра видно
-  if (G.grace > 0 && G.grace <= cfg.graceTime){
+  // мигание неуязвимости: 10 Гц 1.2 с, затем 5 Гц 0.4 с, 70% кадра видно (grace щита и буста не мигает)
+  if (G.grace > 0 && G.grace <= cfg.graceTime && graceBlink){
     const el = cfg.graceTime - G.grace;
     const hz = el < 1.2 ? 10 : 5;
     G.blinkOn = ((el * hz) % 1) < 0.7;
@@ -563,7 +678,20 @@ function updateGame(simDt, realDt){
 
   // вертикаль: Pittman — взлёт gUp, зависание у апекса, тяжёлое падение, нырок
   if (buf.jump >= 0) buf.jump -= realDt;
-  if (G.py > 0 || G.vy > 0){
+  if (G.flying){
+    // полёт на ускорителе: высота подтягивается к flyY, физика прыжка выключена
+    G.py = damp(G.py, PWR.flyY, 10, simDt); G.vy = 0; G.dive = false; groundT = 0; jumpedSinceGround = true;
+  } else if (glideT >= 0){
+    // мягкое приземление после буста: 3.5 м/с вниз, лёгкое «сплющивание» на касании
+    glideT += simDt;
+    G.py = Math.max(0, G.py - 3.5 * simDt); G.vy = -3.5; G.dive = false; groundT = 0;
+    if (G.py <= 0){
+      glideT = -1; G.py = 0; G.vy = 0; jumpedSinceGround = false; G.land = cfg.landSquash;
+      P_land.vy = -3.5; P_land.impact = 0.25; P_land.dive = false;
+      bus.emit("land", P_land);
+      if (buf.jump >= 0) jump();
+    }
+  } else if (G.py > 0 || G.vy > 0){
     let g = G_UP;
     if (G.dive) g = G_UP * J.fallMul;
     else if (Math.abs(G.vy) < J.hangVy) g *= J.hangMul;
@@ -646,21 +774,44 @@ function moveEntities(live){
     if (o.z > cfg.obstacleDespawnZ) removeEntity(obstacles, i);
   }
   const CP = cfg.coinPick;
+  // магнит: энергоны из всех полос в magnetRange м впереди подтягиваются к груди Ризи (x и y; z едет сам)
+  const magnet = live && G.powers.magnet > 0, pull = magnet ? 1 - Math.exp(-PWR.magnetPull * G.simDt) : 0;
+  const ty = CP.yBase + G.py;
   for (let i = coins.length - 1; i >= 0; i--){
     const c = coins[i];
     c.z = G.dist - c.s;
+    if (magnet && c.z > -PWR.magnetRange && c.z < 2){
+      if (!c.mag){ c.mag = true; bus.emit("magnet", c); }
+      c.x += (G.x - c.x) * pull; c.y += (ty - c.y) * pull;
+      if (c.object3d){ c.object3d.position.x = c.x; c.object3d.position.y = c.y; }
+    }
     if (c.object3d) c.object3d.position.z = c.z;
-    if (live && Math.abs(c.z) < CP.z && Math.abs(c.x - G.x) < CP.x && Math.abs(c.y - (CP.yBase + G.py)) < CP.y){
+    if (live && Math.abs(c.z) < CP.z && Math.abs(c.x - G.x) < CP.x && Math.abs(c.y - ty) < CP.y){
       pickup(c, i);
       continue;
     }
     if (c.z > cfg.coinDespawnZ) removeEntity(coins, i);
   }
+  const PP = PWR.pick;
+  for (let i = powerups.length - 1; i >= 0; i--){
+    const p = powerups[i];
+    p.z = G.dist - p.s;
+    if (p.object3d) p.object3d.position.z = p.z;
+    if (live && Math.abs(p.z) < PP.z && Math.abs(p.x - G.x) < PP.x && Math.abs(p.y - ty) < PP.y){
+      activatePower(p.kind);
+      postSpike(0.2, 300);
+      removeEntity(powerups, i);
+      continue;
+    }
+    if (p.z > cfg.coinDespawnZ) removeEntity(powerups, i);
+  }
 }
 
 function pickup(c, i){
-  G.energons++;
-  G.bonusEnergons += G.mult - 1;
+  // ×2 и полёт на бусте удваивают энергон (складываются: ×4)
+  const k = (G.powers.x2 > 0 ? 2 : 1) * (G.flying ? 2 : 1);
+  G.energons += k;
+  G.bonusEnergons += (G.mult - 1) * k;
   let pts = cfg.combo.coin;
   if (c.arc){
     if (arcTrack.id !== c.arc){ arcTrack.id = c.arc; arcTrack.n = 0; }
@@ -688,6 +839,7 @@ function nearMiss(o, kind){
 
 // ---------- КОЛЛИЗИИ ----------
 function checkCollisions(){
+  if (G.flying) return;                          // буст: летим над препятствиями
   for (let i = 0; i < obstacles.length; i++){
     const o = obstacles[i];
     if (Math.abs(o.z) > (o.zLen/2 + cfg.hitPad)) continue;
@@ -715,7 +867,7 @@ const TUT_TEXT = {
   touch: { lane: "Свайп вбок — сменить дорожку", jump: "Свайп вверх — прыжок", slide: "Свайп вниз — подкат" },
   keys:  { lane: "← → / A D — сменить дорожку", jump: "↑ / W / Пробел — прыжок", slide: "↓ / S — подкат" },
 };
-const tutS = { idx:0, phase:"", rampFrom:1, rampTo:1, rampT:1, rampDur:0.2, msgT:0, done:false, satisfied:false, holdT:0 };
+const tutS = { idx:0, phase:"", rampFrom:1, rampTo:1, rampT:1, rampDur:0.2, msgT:0, done:false, satisfied:false };
 function tutEmit(n, phase, action, text){
   const T = G.tutorial;
   T.step = n; T.phase = phase; T.action = action;
@@ -768,15 +920,10 @@ function tutorialUpdate(realDt){
   else if (st.action === "slide") ok = ok && (G.sliding > 0 || G.dive);
   if (!ok){
     if (tth <= TT.holdAt){
-      if (tutS.phase !== "hold" && tutS.phase !== "timeout"){
-        tutS.phase = "hold"; tutS.holdT = 0; tutRamp(0, 0.06); tutEmit(st.n, "hold", st.action, kindText);
-      } else if (tutS.phase === "hold"){
-        // защита от вечного ожидания: случайный подкат гасим по реальному времени,
-        // а через holdMax секунд отпускаем мир — в обучении удар без штрафа
-        if (G.sliding > 0) G.sliding = Math.max(0, G.sliding - realDt);
-        tutS.holdT += realDt;
-        if (tutS.holdT > TT.holdMax){ tutS.phase = "timeout"; tutRamp(1, TT.back); }
-      }
+      if (tutS.phase !== "hold"){ tutS.phase = "hold"; tutRamp(0, 0.06); tutEmit(st.n, "hold", st.action, kindText); }
+      // мир стоит, пока игрок не сделает нужное действие; случайный подкат в стоп-кадре гасим по реальному времени,
+      // чтобы прыжок/подкат с клавиши всегда были доступны
+      else if (G.sliding > 0) G.sliding = Math.max(0, G.sliding - realDt);
     } else if (tth <= TT.slowAt && tutS.phase !== "prompt" && tutS.phase !== "hold"){
       tutS.phase = "prompt"; tutRamp(TT.slowTo, TT.slowIn); tutEmit(st.n, "prompt", st.action, kindText);
     }
@@ -844,7 +991,7 @@ function updateSignals(realDt){
 // ---------- LOOK: окружение, изгиб, пост ----------
 const postBase = { bloom:0, saturation:1, vignette:0 };
 const postMood = { over:0, spike:0, spikeT:0, pickSum:0, flash:0, flashT:0 };
-const postSig = { intensity:0, danger:0, reducedMotion:false, over:false };
+const postSig = { intensity:0, danger:0, reducedMotion:false, over:false, boost:false };
 const flashTimes = [-9, -9, -9];
 function flashAllowed(){
   // полноэкранные вспышки не чаще 3 в секунду (HUD-8)
@@ -878,7 +1025,7 @@ function drivePost(realDt){
   postMood.over = damp(postMood.over, G.mode === "over" || G.mode === "catch" ? 1 : 0, 6, realDt);
   const P = post.params;
   if (typeof post.setSignals === "function"){
-    postSig.intensity = G.intensity; postSig.danger = G.danger;
+    postSig.intensity = G.intensity; postSig.danger = G.danger; postSig.boost = G.flying;
     postSig.reducedMotion = RM; postSig.over = G.mode === "over" || G.mode === "catch";
     try { post.setSignals(postSig); } catch(e){ console.error("[look] post.setSignals", e); }
   } else if (P){
@@ -1029,6 +1176,7 @@ function respawnEntities(rec){
   if (!rec || rec.slot !== "world") return;
   for (const e of obstacles){ if (e.object3d && e.object3d.parent) e.object3d.parent.remove(e.object3d); e.object3d = null; rec.scope.emitLocal("spawn:obstacle", e); lookPatch(e.object3d); }
   for (const e of coins){ if (e.object3d && e.object3d.parent) e.object3d.parent.remove(e.object3d); e.object3d = null; rec.scope.emitLocal("spawn:coin", e); lookPatch(e.object3d); }
+  for (const e of powerups){ if (e.object3d && e.object3d.parent) e.object3d.parent.remove(e.object3d); e.object3d = null; rec.scope.emitLocal("spawn:powerup", e); lookPatch(e.object3d); }
 }
 async function swapToBase(rec){
   rec.swapping = true;
@@ -1180,9 +1328,9 @@ function sim(seconds = 30, bot = "idle", opts = {}){
   return {
     seed: sd, bot, seconds: Math.round(i / 60 * 10) / 10,
     dist: Math.round(G.dist*10)/10, speed: Math.round(G.speed*10)/10, energons: G.energons, bonus: G.bonusEnergons,
-    hits: stats.hits, gameover: G.mode === "over" || G.mode === "catch",
+    hits: stats.hits, shieldHits: stats.shieldHits, powerups: stats.powerups, gameover: G.mode === "over" || G.mode === "catch",
     jumps: stats.jumps, slides: stats.slides, laneChanges: stats.laneChanges, nearMisses: stats.nearMisses,
-    mult: G.mult, patterns: director.state.patterns,
+    mult: G.mult, patterns: director.state.patterns, powerupsSpawned: director.state.powerups,
     passed: { jump: stats.passed.jump, slide: stats.passed.slide, wall: stats.passed.wall },
     hitLog: stats.hitLog.slice(0, 10),
   };
@@ -1194,6 +1342,8 @@ function fairness(seeds = [1,2,3,4,5,6,7,8,9,10], seconds = 300){
 ctx.actions = {
   start: o => startRun(o), pause, resume, revive, toTitle,
   skipTutorial: () => finishTutorial(true),
+  buyUpgrade, upgradePrice, powerDur,
+  reviveInfo: () => ({ price: cfg.reviveCost, can: G.mode === "over" && G.revives < cfg.reviveMax && wallet.total >= cfg.reviveCost, have: wallet.total }),
   setSetting(k, v){
     settings[k] = v;
     try { localStorage.setItem(cfg.settingsKey, JSON.stringify(settings)); } catch(e){}
@@ -1203,7 +1353,8 @@ ctx.actions = {
 };
 
 window.RUN = { ctx, G, renderer, scene, camera, startRun, step, render, sim, fairness, plugins, doAction, stats, frameInfo,
-  director, rig, actions: ctx.actions, get events(){ return readEvents(); }, readEvents };
+  director, rig, actions: ctx.actions, get events(){ return readEvents(); }, readEvents,
+  wallet, activatePower, walletAdd };
 if (qp.get("hideui") === "1") document.body.classList.add("hideui");
 { const skip = $("tutSkip"); if (skip) skip.addEventListener("click", ev => { ev.stopPropagation(); finishTutorial(true); }); }
 
@@ -1214,6 +1365,7 @@ const ready = (async () => {
   // подписка ПОСЛЕ плагинов: плагин уже создал ent.object3d → гнём его
   bus.on("spawn:obstacle", e => lookPatch(e.object3d));
   bus.on("spawn:coin", e => lookPatch(e.object3d));
+  bus.on("spawn:powerup", e => lookPatch(e.object3d));
   await initLookLate();
   bus.emit("title");
   if (SHOT) return runShot();
@@ -1224,13 +1376,22 @@ const ready = (async () => {
 window.RUN.ready = ready;
 
 // ?shot=1&at=N — автостарт, симуляция N секунд шагом 1/60 без смертей, заморозка, ОДИН рендер.
-// &fx=hit|pickup|milestone|danger|nearmiss (через запятую) — событие перед кадром; &t=мс — сколько realDt
+// &fx=hit|pickup|milestone|danger|nearmiss|over (через запятую) — событие перед кадром; &t=мс — сколько realDt
 // прожить после события при timeScale 0 (тряска/вспышка/FOV-кик идут, мир стоит).
+// &powerup=magnet|shield|boost|x2 — бонус включается за 1.25 с до кадра; &wallet=N, &upg=a,b,c,d — кошелёк и уровни
+// прокачки только в памяти (localStorage в фоторежиме не пишется).
 function runShot(){
   const at = qp.has("at") ? +qp.get("at") : 4;
   const lane = qp.has("lane") ? clamp(+qp.get("lane"), 0, 2) : null;
   const fx = (qp.get("fx") || "").split(",").filter(Boolean);
   const tms = qp.has("t") ? Math.max(0, +qp.get("t")) : 0;
+  const pu = qp.get("powerup");
+  if (qp.has("wallet")) walletAdd((+qp.get("wallet") || 0) - wallet.total);
+  if (qp.has("upg")){
+    const a = qp.get("upg").split(",");
+    for (let i = 0; i < PWR.kinds.length; i++) G.upgrades[PWR.kinds[i]] = clamp(+(a[i] !== undefined ? a[i] : a[0]) || 0, 0, PWR.prices.length);
+    bus.emit("upgrade", { kind:"", level:0, price:0 });
+  }
   ctx.simulating = true;
   clock.shotForce = true;
   const n = Math.max(1, Math.round(at*60));
@@ -1238,9 +1399,11 @@ function runShot(){
     for (let i=0;i<n;i++) step(1/60);          // титульный экран: облёт заморожен в момент t = at
   } else {
     startRun({ tutorial:false });
+    const puAt = Math.max(0, n - 75);
     for (let i=0;i<n;i++){
       if (lane !== null && G.lane !== lane){ G.lane = lane; G.laneFrom = G.laneTo = G.x = LANES[lane]; G.laneT = 1; }
       G.grace = 99;                             // в фоторежиме не умираем
+      if (pu && i === puAt) activatePower(pu);
       step(1/60);
     }
     // grace остаётся 99 и в добивочных шагах (иначе ложный удар о ряд в зоне); fx=hit сам его сбрасывает
@@ -1284,5 +1447,11 @@ function stageFx(f){
     const o = nearestAhead(obstacles) || { id:0, kind:"wall", lanes:[(G.lane + 1) % 3], z:0, s:G.dist, zLen:1.4, object3d:null, tier:1 };
     G.nearMiss.t = -9;
     nearMiss(o, "lane");
+  } else if (f === "over"){
+    // экран результатов: поимка и карточка сразу (анимацию карточки проживаем через &t)
+    const o = nearestAhead(obstacles) || { id:0, kind:"wall", lanes:[G.lane], z:-1, s:G.dist + 1, zLen:1.4, object3d:null, tier:1 };
+    G.grace = 0; G.swarmNear = cfg.swarmTime;
+    startCatch(o);
+    gameOver();
   }
 }

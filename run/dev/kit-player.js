@@ -2,8 +2,9 @@
 // ?kind=procedural|glb|auto  ?glb=../src/actors/rizy/testdata/rizy_wip.glb (свой файл)
 // ?kinds=procedural,glb      — одна поза (?pose=…) для каждой модели в соседних колонках
 // ?pose=grid|idle|front|run|game|jump|land|slide|stumble|celebrate|over|lean|dive|nearmiss|danger
-// ?view=face|front|game|game0|back34|side|close  ?q=low|med|high  ?post=0  ?look=0  ?speedI=0.5  ?t=сек  ?anim=1 (живой цикл)
+// ?view=face|front|game|game0|back34|side|close|back  ?q=low|med|high  ?post=0  ?look=0  ?speedI=0.5  ?t=сек  ?anim=1 (живой цикл)
 //   game  — камера из bible (fov 60, y 3.8, z 6.4, look (0, 1.0, −10)); game0 — нынешняя камера main.js
+// ?scarf=1 — verlet-шарф (по умолчанию выключен, на мастер-листе его нет), ?pack=1 — рюкзак (процедурная)
 import * as THREE from "three";
 import { createRizy } from "../src/actors/rizy/index.js";
 
@@ -137,7 +138,7 @@ function scenario(name, x0){
 function place(cam, view, x0, aspect, py = 0){
   cam.aspect = aspect;
   const V = qp.get("view") || view, fy = py * 0.85;
-  if (V === "face"){ cam.fov = 26; cam.position.set(x0 + 0.55, 1.78, -2.55); cam.lookAt(x0, 1.58, 0); }
+  if (V === "face"){ cam.fov = 26; cam.position.set(x0 + 0.5, 1.95, -2.5); cam.lookAt(x0, 1.74, 0); }
   else if (V === "front"){ cam.fov = 30; cam.position.set(x0 + 1.1, 1.45 + fy, -4.9); cam.lookAt(x0, 1.05 + fy, 0); }
   else if (V === "game"){ cam.fov = 60; cam.position.set(x0, 3.8, 6.4); cam.lookAt(x0, 1.0, -10); }
   else if (V === "game0"){ cam.fov = 58; cam.position.set(x0, 3.05, 5.45); cam.lookAt(x0, 1.45, -8); }
@@ -157,7 +158,7 @@ for (let i = 0; i < names.length; i++){
   const x0 = GRID ? (i - (names.length - 1) / 2) * SPACING : 0;
   const kind = KINDS ? KINDS[i] : KIND;
   const prefer = kind === "glb" ? "glb" : kind === "auto" ? "auto" : "procedural";
-  const rizy = await createRizy(ctx, { prefer, url });
+  const rizy = await createRizy(ctx, { prefer, url, scarf: qp.get("scarf") === "1", backpack: qp.get("pack") === "1" });
   scene.add(rizy.root);
   actors.push({ rizy, sc: scenario(names[i], x0) });
 }

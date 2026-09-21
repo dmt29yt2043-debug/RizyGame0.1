@@ -42,6 +42,10 @@ export default {
       play("nearmiss", { dir: Math.sign(lanes[0] - G.lane) || 1 });
     });
     bus.on("hit", () => play("hit"));
+    // ускорители: подбор (тон по виду), окончание, щит принял удар
+    bus.on("powerup", p => { if (!p) return; if (p.on) play("powerup", { kind: p.kind }); else if (p.dur < 0) play("shield"); else play("powerdown", { kind: p.kind }); });
+    bus.on("upgrade", () => play("mission"));
+    bus.on("revive", () => { call("setPaused", false); play("start"); });
     bus.on("gameover", p => { play("gameover"); if (p && p.isBest) play("record", { delay: 1.4 }); });
     bus.on("milestone", () => play("milestone"));
     bus.on("combo:tier", n => play("tier", { tier: n }));
@@ -51,7 +55,6 @@ export default {
     bus.on("tunnel:enter", () => call("setTunnel", true));
     bus.on("tunnel:exit", () => call("setTunnel", false));
     bus.on("pause", b => call("setPaused", !!b));
-    bus.on("revive", () => { call("setPaused", false); play("start"); });
     bus.on("settings", st => {
       if (!st || !has("setVolume")) return;
       if (st.music != null) call("setVolume", "music", st.music);

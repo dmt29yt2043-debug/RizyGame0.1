@@ -48,13 +48,14 @@ ctx = {
           patch(obj) → obj,        // гнуть поздно добавленные объекты (идемпотентно; без изгиба — no-op)
           enabled },               // false при ?look=0
   lights: { hemi, sun, fill, sunDir },   // солнце и fill ведёт main каждый кадр
-  entities: { obstacles: [], coins: [] },
+  entities: { obstacles: [], coins: [], powerups: [] },
   util: { rnd, pick, clamp, lerp, damp, canvasTex, makeRng, ease },
   $,                               // getElementById
   time: { t, dt, simT, simDt },    // t/dt — реальное время; simT/simDt — масштабированное
   settings,                        // rizyrun_settings: { reducedMotion: null|bool, calm, contrast, vibro }
   simulating,                      // true во время sim()/предпрогона фоторежима (звук молчит, localStorage не пишется)
-  actions: { start(opts), pause(), resume(), revive() → bool, toTitle(), skipTutorial(), setSetting(k, v) },
+  actions: { start(opts), pause(), resume(), revive() → bool, toTitle(), skipTutorial(), setSetting(k, v),
+             buyUpgrade(kind) → bool, upgradePrice(kind), powerDur(kind), reviveInfo() → { price, can, have } },
 }
 ```
 
@@ -113,12 +114,22 @@ export default {
 | `mission` | `{ id, kind, text, goal, progress, done, index }` (мутируется на месте) |
 | `tutorial` | `{ active, step, phase, action }` |
 | `reducedMotion`, `calm`, `inputKind` | ОС/настройка/?rm; «спокойный темп» (скорость ×0.85); `"keys" \| "mouse" \| "touch"` |
+| `wallet`, `upgrades` | ECON: кошелёк энергонов между забегами (`rizyrun_wallet`); уровни прокачки `{ magnet, shield, boost, x2 }` 0..3 (`rizyrun_upgrades`) |
+| `powers`, `powerDur` | POWER: секунды до конца каждого бонуса (независимые таймеры, складываются); полная длительность подбора (для полоски HUD) |
+| `flying`, `boostK` | буст: полёт над препятствиями (py → 1.6, без коллизий, прыжок/подкат игнорируются); коэффициент скорости 0..1 (×1 + 0.5·boostK), вход 0.3 с, выход 1.5 с |
 
 ## Сущности: логика в main, визуал в world
 - obstacle: `{ id, kind: "jump"|"slide"|"wall", lanes: [..] (общий замороженный массив — не мутировать), z, s, row, tier, zLen,
   object3d: null, passed, touched, entered, inLane, minPy, near: ""|"lane"|"jump"|"slide", fatal }`.
   Валики и стены — по сущности на полосу; гирлянда — одна сущность на соседние полосы. Ряд = общий `row`/`s`.
-- coin: `{ id, lane, x, y, z, s, arc, arcN, object3d: null }` (`arc` ≠ 0 — энергон дуги из `arcN` штук; x может быть между полосами).
+- coin: `{ id, lane, x, y, z, s, arc, arcN, object3d: null, mag }` (`arc` ≠ 0 — энергон дуги из `arcN` штук; x может быть между полосами;
+  `mag` — уже тянется магнитом: main двигает x/y и пишет их в `object3d.position`).
+- powerup: `{ id, kind: "magnet"|"shield"|"boost"|"x2", lane, x, y (1.1), z, s, object3d: null }` — ускоритель; препятствием НЕ считается
+  (боты и режиссёр его не видят). Режиссёр ставит первый на ≈180 м, дальше каждые 350–600 м посреди промежутка/передышки,
+  в случайной полосе без препятствия в радиусе 6 м (`cfg.power`). Подбор: `|z| < 1.6`, `|x − G.x| < 0.95`, `|y − (0.95 + py)| < 1.5`.
+  Эффекты: магнит — энергоны из всех полос в 18 м впереди тянутся к груди (`magnet` на первый рывок); щит — один удар без страйка/роя/комбо
+  (`shield:break`, grace 0.6 с без мигания); буст — `G.flying`, скорость ×1.5, неуязвимость, энергоны ×2, рой отпускает, на выходе
+  планирование 3.5 м/с вниз + grace 1.6 с; ×2 — энергон за два (с бустом ×4). Длительности — `cfg.power.dur[kind][уровень]`.
 - `s` — абсолютная дистанция; каждый шаг `z = G.dist − s` (впереди z < 0), main пишет `object3d.position.z = z`.
 - Спавн при `s − dist ≤ 118` → `emit("spawn:*", ent)` → плагин ставит `ent.object3d` → main гнёт его. Удаление → `emit("despawn", ent)`.
 - Коллизии: зона `|z| ≤ zLen/2 + 0.5` на `G.lane`. jump: `py < 0.9`; slide: нет подката и `py < 2.4` (гирлянду не перепрыгнуть); wall: всегда.
@@ -139,8 +150,15 @@ export default {
 | `hit` | удар (и в неуязвимости не шлётся) | obstacle (`fatal: true` — второй удар при рое рядом) |
 | `swarm:near`, `swarm:far` | рой догнал / отстал | — |
 | `catch` | фатальный удар, начало слоу-мо поимки | ♻ `{ dist, obstacle }` |
-| `gameover` | через 0.7 с после catch | `{ dist, energons, bonus, best, isBest, revive: { price, can } }` |
-| `revive` | спасение за энергоны | — |
+| `gameover` | через 0.7 с после catch | `{ dist, energons, bonus, best, isBest, revive: { price, can, have, left }, wallet: { earned, total } }` (энергоны + бонус зачислены в кошелёк) |
+| `revive` | «Продолжить» за `cfg.reviveCost` из кошелька (≤ `reviveMax` раз за забег), затем `countdown` 3-2-1 | — |
+| `spawn:powerup` | ускоритель появился (world ставит `object3d`) | ent |
+| `powerup` | бонус включился / кончился | ♻ `{ kind, on, dur }` (`dur` < 0 — щит разбит ударом) |
+| `boost` | буст начался / кончился (main шлёт сам; камера +8°, пост, линии скорости) | `bool` |
+| `magnet` | энергон начал тянуться к Ризи | coin |
+| `shield:break` | щит поглотил ряд | obstacle |
+| `wallet` | кошелёк изменился | ♻ `{ total, delta }` |
+| `upgrade` | куплен уровень (`actions.buyUpgrade(kind)`) | `{ kind, level, price }` |
 | `nearmiss` | ловкий проход (окна GAME-8, кулдаун 1 с) | obstacle (`near` = вид) |
 | `combo:tier` | смена множителя | `n` (1..5) |
 | `mission:progress`, `mission:complete` | шаг / выполнение миссии | `G.mission` |
@@ -198,16 +216,21 @@ Reduced motion: без тряски/киков/FOV от скорости/кре�
 - `tools/shot.sh OUT.png "seed=7&shot=1&at=6[&lane=0][&pose=jump|slide][&cam=title][&hideui=1][&q=med][&fx=hit,pickup,milestone,danger,nearmiss][&t=60]" [W H]`
   - `seed` — детерминированный мир; `shot=1&at=N` — автостарт, N с шагом 1/60 без смертей (timeScale = 1), заморозка, ОДИН рендер (preserveDrawingBuffer), `document.title = "SHOT_READY"`.
   - `cam=title` — облёт титула в момент t = at (без старта). `lane`, `pose` — как раньше.
-  - `fx=…` — событие перед кадром (через запятую): hit (удар по ближайшему ряду, без смерти), pickup, milestone, danger (рой рядом, danger = 1), nearmiss.
+  - `fx=…` — событие перед кадром (через запятую): hit (удар по ближайшему ряду, без смерти), pickup, milestone, danger (рой рядом, danger = 1), nearmiss,
+    over (поимка + карточка результатов; анимацию карточки проживать через `&t=2600`).
+  - `powerup=magnet|shield|boost|x2` — бонус включается за 1.25 с до кадра; `wallet=N`, `upg=a,b,c,d` — кошелёк и уровни прокачки только в памяти;
+    `shop=1` (с `cam=title`) — открыть карточку «Прокачка».
   - `t=мс` — сколько прожить после события только realDt (timeScale 0: тряска, вспышка, кики, пост идут; мир стоит). Без `t` — один добивочный шаг 1/60.
   - `rm=1` — reduced motion, `tut=1` — обучение, `breakplugin=<slot>` — проверка фолбэка.
 - `tools/console.sh "query"` → JSON `{ ok, title, crash, exceptions, console }`; `tools/eval.sh "query" "JS"` → + `eval`.
 - **window.RUN**: `{ ctx, G, renderer, scene, camera, startRun, step(realDt), render, sim, fairness, plugins, doAction(a, src), stats, frameInfo,
   director, rig, actions, events (геттер: последние 160 событий кроме frame, `{ t, name, payload }`), readEvents(n), ready }`.
   - `RUN.sim(seconds, bot = "idle", { seed })` — синхронный прогон шагом 1/60 без рендера (обучение выкл.); bot: `"perfect" | "random" | "idle"`;
-    `seed` меняет геймплейный генератор без перезагрузки. Возвращает `{ seed, bot, seconds, dist, speed, energons, bonus, hits, gameover, jumps, slides,
-    laneChanges, nearMisses, mult, patterns, passed: {jump, slide, wall}, hitLog: [{t, dist, kind, lanes, tier, lane, py, sliding}] }`.
-  - `RUN.fairness(seeds = [1..10], seconds = 300)` — perfect-бот по сидам. Приёмка: 0 ударов на каждом сиде; `sim(90, "idle")` заканчивается `gameover`.
+    `seed` меняет геймплейный генератор без перезагрузки. Возвращает `{ seed, bot, seconds, dist, speed, energons, bonus, hits, shieldHits, powerups,
+    powerupsSpawned, gameover, jumps, slides, laneChanges, nearMisses, mult, patterns, passed: {jump, slide, wall}, hitLog: [{t, dist, kind, lanes, tier, lane, py, sliding}] }`.
+  - `RUN.fairness(seeds = [1..10], seconds = 300)` — perfect-бот по сидам. Приёмка: 0 ударов (и 0 `shieldHits`) на каждом сиде; `sim(90, "idle")` заканчивается `gameover`.
+    Бот perfect берёт ускоритель в своей полосе (бонус полосы 0.5 < цена смены полосы), но ради него не рискует; sim кошелёк не трогает.
+  - `RUN.wallet`, `RUN.activatePower(kind)`, `RUN.walletAdd(n)` — экономика и бонусы для тестов.
   - `RUN.frameInfo` — `renderer.info` за ВЕСЬ последний кадр (тени + сцена + проходы поста; autoReset выключен).
 
 ## Бюджет производительности
@@ -216,10 +239,22 @@ Reduced motion: без тряски/киков/FOV от скорости/кре�
 Аллокации допускаются только на спавн сущностей, генерацию паттерна (раз в 1–3 с), удар и конец забега.
 
 ## localStorage (каждое чтение/запись в try/catch; в sim и фоторежиме не пишется)
-`rizyrun_best` · `rizyrun_settings` · `rizyrun_tut_v1` · `rizyrun_missions` (зарезервированы: `rizyrun_daily`, `rizyrun_streak`).
+`rizyrun_best` · `rizyrun_settings` · `rizyrun_tut_v1` · `rizyrun_missions` · `rizyrun_wallet` (число) · `rizyrun_upgrades` (`{ magnet, shield, boost, x2 }`)
+(зарезервированы: `rizyrun_daily`, `rizyrun_streak`).
+
+## Экономика (ECON) и ускорители (POWER)
+- Кошелёк: на `gameover` в кошелёк идут энергоны + бонус ловкости (после «Продолжить» — только прирост). Титул и магазин показывают `G.wallet`,
+  карточка результатов — «+N за забег · всего M». «Продолжить за 100 ⬡» (`cfg.reviveCost`, `reviveMax` 1 раз за забег): рой отпускает, 3-2-1,
+  неуязвимость 3 с, скорость ×0.85, препятствия ближе 30 м убираются. Не хватает — кнопка неактивна с подсказкой.
+- Магазин «Прокачка» (титул): 4 улучшения × 3 уровня, цены `cfg.power.prices` 150/400/900; длительность `cfg.power.dur[kind]` =
+  [без прокачки, ур.1, ур.2, ур.3]: магнит 4/6/9/12 с, щит 7/10/15/20 с, буст 3.5/5/7/9 с, ×2 6/8/12/16 с. HUD: чип с иконкой и убывающей полоской.
+- Визуал пикапов — world-кит (`makePowerup`, инстансные части: фигурка по виду + кольцо + ореол + blob, ≈ +3 draw calls при видимом пикапе);
+  пузырь щита — vfx-адаптер; звуки `powerup` (высота по виду), `powerdown`, `shield`.
 
 ## Стиль RIZYLAND
 Электрический синий #0536D4, лайм #C0FF3F (только награды), чернила #070D36, hazard #FF3B5C, danger #FF2436, снег #F2F6FF, холодная тень #2A3C9A.
-Мягкие войлочные/игрушечные формы, пастельная зима, яркое боковое солнце. Ризи: небесно-голубая кожа, лаймовое каре с двумя пучками, чёрный свитер
-с лаймовыми/синими цветами, синие джинсы с подворотом, чёрные кеды с белой подошвой, лаймовый шарф, синий рюкзак.
+Мягкие войлочные/игрушечные формы, пастельная зима, яркое боковое солнце. Ризи (по мастер-листам 2026-09): пряжевая кукла — синяя войлочная кожа
+#3f80f5, лаймовое каре из прядей пряжи с двумя пучками-спиралями, огромные глянцевые глаза, открытая улыбка с зубами и язычком, короткий чёрный
+свитер с аппликациями-цветами (лайм/синий), широкие ярко-синие джинсы, чёрные кеды с белым мыском и лаймовыми шнурками. Шарф и рюкзак —
+только по опциям `scarf`/`backpack` (по умолчанию выключены).
 Злодеи — рой Гасителей: тёмные войлочные помпоны со светящимся красным глазом.

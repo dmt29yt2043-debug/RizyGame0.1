@@ -107,6 +107,31 @@ export const snowflakeSVG =`<svg viewBox="0 0 24 24" aria-hidden="true" fill="no
   <path d="M12 2.5v19M3.8 7.25l16.4 9.5M3.8 16.75l16.4-9.5M9.5 4.2 12 6.7l2.5-2.5M9.5 19.8 12 17.3l2.5 2.5"/>
 </svg>`;
 
+// Ускорители (POWER): магнит, щит, ракета-ускоритель, ×2 — цвета бонусов, обводка чернилами
+export const magnetSVG = `<svg viewBox="0 0 32 32" aria-hidden="true">
+  <path d="M8 5v11a8 8 0 0 0 16 0V5" fill="none" stroke="${INK}" stroke-width="9.5" stroke-linecap="round"/>
+  <path d="M8 5v11a8 8 0 0 0 16 0V5" fill="none" stroke="#0536D4" stroke-width="5.5" stroke-linecap="round"/>
+  <rect x="4.5" y="3.5" width="7" height="7" rx="1.5" fill="#fff" stroke="${INK}" stroke-width="2"/>
+  <rect x="20.5" y="3.5" width="7" height="7" rx="1.5" fill="#fff" stroke="${INK}" stroke-width="2"/>
+</svg>`;
+export const shieldSVG = `<svg viewBox="0 0 32 32" aria-hidden="true">
+  <path d="M16 3.5 26.5 7.5v8c0 6.5-4.5 11-10.5 13.5C10 26.5 5.5 22 5.5 15.5v-8z" fill="#7FD4FF" stroke="${INK}" stroke-width="2.4" stroke-linejoin="round"/>
+  <path d="M16 8.5 22 11v4.5c0 4-2.6 7-6 8.5-3.4-1.5-6-4.5-6-8.5V11z" fill="#fff"/>
+  <path d="M12.5 15.5 15 18l4.8-5" fill="none" stroke="#0536D4" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`;
+export const boostSVG = `<svg viewBox="0 0 32 32" aria-hidden="true">
+  <path d="M16 2.5c4.5 3.5 6 9 6 14l-2.5 3.5h-7L10 16.5c0-5 1.5-10.5 6-14z" fill="#C0FF3F" stroke="${INK}" stroke-width="2.4" stroke-linejoin="round"/>
+  <path d="M10.5 15.5 6 20l4 1.5zM21.5 15.5 26 20l-4 1.5z" fill="${INK}"/>
+  <circle cx="16" cy="12.5" r="2.6" fill="#fff" stroke="${INK}" stroke-width="1.8"/>
+  <path d="M13 22.5h6l-3 7z" fill="#FFB347" stroke="${INK}" stroke-width="2" stroke-linejoin="round"/>
+</svg>`;
+export const x2SVG = `<svg viewBox="0 0 32 32" aria-hidden="true">
+  <circle cx="16" cy="16" r="13" fill="#FF7EB6" stroke="${INK}" stroke-width="2.4"/>
+  <path d="M7.5 11.5 13 20.5M13 11.5 7.5 20.5" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+  <path d="M16.5 12.2c0-2 1.6-3 3.6-3s3.6 1 3.6 3c0 2.6-7 4.6-7 8.8h7.4" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`;
+export const POWER_SVG = { magnet: magnetSVG, shield: shieldSVG, boost: boostSVG, x2: x2SVG };
+
 export const trophySVG = `<svg viewBox="0 0 24 24" aria-hidden="true">
   <path d="M7 3.5h10v4.2a5 5 0 0 1-10 0zM7 5H3.8v1.6A3.6 3.6 0 0 0 7.4 10.2M17 5h3.2v1.6a3.6 3.6 0 0 1-3.6 3.6M12 12.7v3.8M8 20.5h8l-1-4H9z"
    fill="#C0FF3F" stroke="#070D36" stroke-width="2" stroke-linejoin="round"/>
