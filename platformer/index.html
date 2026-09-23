@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>Ризи · Кристальный путь</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#e2a9c2">
+<link rel="stylesheet" href="src/hud.css?v=1">
+</head>
+<body>
+<div id="wrap">
+  <div id="crash"><div class="box">
+    <h2>Игра не запустилась</h2>
+    <p id="crashHint">Покажи мне текст ниже — по нему сразу видно причину.</p>
+    <code id="crashMsg"></code>
+  </div></div>
+</div>
+<script>
+  (function(){
+    function crash(msg, hint){
+      var c = document.getElementById("crash");
+      if (!c || c.style.display === "flex") return;
+      if (hint) document.getElementById("crashHint").textContent = hint;
+      document.getElementById("crashMsg").textContent = msg;
+      c.style.display = "flex";
+    }
+    window.addEventListener("error", function(e){
+      crash((e.message || "ошибка") + "\n" + (e.filename || "").split("/").pop() + ":" + (e.lineno || 0));
+    });
+    window.addEventListener("unhandledrejection", function(e){ crash("Promise: " + e.reason); });
+    try {
+      var t = document.createElement("canvas");
+      if (!(t.getContext("webgl2") || t.getContext("webgl")))
+        crash("WebGL недоступен", "Браузер не может рисовать 3D. Включи аппаратное ускорение или открой в Chrome/Safari.");
+    } catch (err){ crash("WebGL: " + err.message); }
+    setTimeout(function(){
+      if (!window.PLAT_BOOT) crash("Модуль игры не загрузился за 8 секунд",
+        "Чаще всего это значит, что игра открыта как файл, а не через сервер. Запусти game/start-server.command и открой /platformer/.");
+    }, 8000);
+  })();
+</script>
+<script type="importmap">
+{ "imports": { "three": "../run/three.module.js", "three/addons/": "../run/addons/" } }
+</script>
+<script type="module" src="src/main.js?v=1"></script>
+</body>
+</html>
