@@ -36,6 +36,21 @@ const VIGNETTE = {
     }`,
 };
 
+// страховка перед bloom: пиксель с NaN/Inf (любая будущая ошибка в шейдере) гасим в ноль.
+// Иначе размытие bloom растаскивает один такой пиксель на весь кадр — экран чернеет (так было с лентой рывка на Metal).
+const SANITIZE = {
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse; varying vec2 vUv;
+    void main(){
+      vec4 c = texture2D(tDiffuse, vUv);
+      bvec4 bad = bvec4(c.r != c.r || c.r > 60000.0, c.g != c.g || c.g > 60000.0, c.b != c.b || c.b > 60000.0, c.a != c.a);
+      if (any(bad)) c = vec4(0.0, 0.0, 0.0, 1.0);
+      gl_FragColor = c;
+    }`,
+};
+
 export function createPost(renderer, scene, camera, { bloom = 0.55, samples = 4, dof = false } = {}){
   const size = renderer.getSize(new THREE.Vector2());
   const dpr = renderer.getPixelRatio();
@@ -43,6 +58,7 @@ export function createPost(renderer, scene, camera, { bloom = 0.55, samples = 4,
   const rt = new THREE.WebGLRenderTarget(size.x * dpr, size.y * dpr, { type: THREE.HalfFloatType, samples: renderer.capabilities.isWebGL2 ? samples : 0 });
   const composer = new EffectComposer(renderer, rt);
   composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(new ShaderPass(SANITIZE));
   const bloomPass = new UnrealBloomPass(new THREE.Vector2(size.x / 2, size.y / 2), bloom, 0.5, 1.0);
   bloomPass.highPassUniforms && (bloomPass.highPassUniforms.smoothWidth.value = 0.35);
   composer.addPass(bloomPass);

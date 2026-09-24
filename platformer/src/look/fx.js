@@ -80,7 +80,7 @@ export function createFx(maxParticles = 420){
   const ribbonMat = new THREE.ShaderMaterial({
     vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
     fragmentShader: `varying vec2 vUv; uniform float uA; uniform vec3 uC;
-      void main(){ float a = pow(vUv.x, 1.6) * smoothstep(0.0, 0.35, vUv.y) * smoothstep(1.0, 0.65, vUv.y) * uA;
+      void main(){ float a = pow(clamp(vUv.x, 0.0, 1.0), 1.6) * smoothstep(0.0, 0.35, vUv.y) * smoothstep(1.0, 0.65, vUv.y) * uA;
         gl_FragColor = vec4(uC, a);
         #include <colorspace_fragment>
       }`,

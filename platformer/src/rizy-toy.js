@@ -479,9 +479,12 @@ export function createRizyToy(opts = {}){
     const stretchZ = st.dash * 0.22;
     squash.scale.set(1 - sq * 0.5 - stretchZ * 0.2, 1 + sq - stretchZ * 0.25, 1 - sq * 0.5 + stretchZ);
 
-    // поворот к направлению бега: 3/4 к камере; при развороте проходит через фас
+    // поворот: стоит — 3/4 к зрителю (видно лицо); бежит — почти профиль по ходу движения (иначе ноги шагают
+    // «наискосок» и она бежит боком, как краб); рывок — чистый профиль. При развороте проходит через фас.
     const face = s.facing || 1;
-    const target = st.win > 0 ? 0 : face * 0.95;
+    const moveK = Math.min(1, Math.max(grounded ? speed * 1.6 : 0.75, 0));
+    const yawAbs = s.dashing ? 1.5 : 0.95 + (1.32 - 0.95) * moveK;
+    const target = st.win > 0 ? 0 : face * yawAbs;
     st.yaw = damp(st.yaw, target, 12, dt);
     root.rotation.y = st.yaw + (st.win > 0 ? Math.sin(st.t * 5) * 0.25 : 0);
 
