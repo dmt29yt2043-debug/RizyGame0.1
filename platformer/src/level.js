@@ -153,6 +153,7 @@ export function moverPos(m, t){
 }
 
 // мир для физики: solids + plats (oneway и движущиеся — одним списком, движущиеся с dx/dy)
+// + vines (уровень 2, лазание) — у уровня 1 level.vines нет, значит world.vines = [], поведение не меняется.
 export function buildWorld(level){
   const solids = level.solids.map(r => ({ id: r.id, x0: r.x0, x1: r.x1, y0: r.y0, y1: r.y1 }));
   const plats = level.oneways.map(o => ({ id: o.id, x0: o.x0, x1: o.x1, y: o.y, dx: 0, dy: 0 }));
@@ -161,7 +162,8 @@ export function buildWorld(level){
     plats.push(pl);
     return pl;
   });
-  const w = { solids, plats, movers };
+  const vines = (level.vines || []).map(v => ({ id: v.id, x0: v.x0, x1: v.x1, y0: v.y0, y1: v.y1, side: v.side, cx: (v.x0 + v.x1) / 2 }));
+  const w = { solids, plats, movers, vines };
   setMovers(w, 0, true);
   return w;
 }

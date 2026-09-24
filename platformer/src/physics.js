@@ -1,9 +1,11 @@
 // Физика героини: фиксированный шаг, AABB против прямоугольников уровня.
 // Без three и без DOM — тот же код гоняет node-проверка проходимости (src/check.js).
 //
-// Мир для шага: { solids: [{x0,x1,y0,y1}], plats: [{x0,x1,y, dx,dy, id}] }
-//   solids — твёрдые блоки со всех сторон; plats — «насквозь снизу» (и движущиеся), держат только сверху.
-// Ввод: { left, right, jump (зажат), jumpPressed (фронт), dashPressed (фронт) } — фронты шаг гасит сам.
+// Мир для шага: { solids: [{x0,x1,y0,y1}], plats: [{x0,x1,y, dx,dy, id}], vines?: [{x0,x1,y0,y1,side,cx,id}] }
+//   solids — твёрдые блоки со всех сторон; plats — «насквозь снизу» (и движущиеся), держат только сверху;
+//   vines — вертикальные зоны хвата (уровень 2, лазание); side — направление «от стены» (+1|-1), в эту
+//   сторону происходит отпускание ←/→ и отскок прыжком. У уровня 1 world.vines нет/пуст — поведение то же.
+// Ввод: { left, right, up, down, jump (зажат), jumpPressed (фронт), dashPressed (фронт) } — фронты шаг гасит сам.
 // События шага складываются в массив ev: "jump" | "djump" | "land" | "dash".
 import { PHYS } from "./config.js";
 
@@ -18,6 +20,7 @@ export function createPlayer(x = 0, y = 0){
     invuln: 0,
     jumping: false,            // поднимаемся после своего прыжка (для короткого прыжка)
     airT: 0, fallFrom: y,
+    climbing: false, climbV: 0, climbSide: 1, climbVine: null, climbCD: 0,
   };
 }
 
@@ -30,6 +33,7 @@ export function stepPlayer(p, inp, dt, world, ev){
   const P = PHYS;
   p.px = p.x; p.py = p.y;
   const wasGrounded = p.grounded;
+  const hw = P.w * 0.5;
 
   // едем на движущейся платформе: она уже сдвинулась в этом шаге
   if (p.grounded && p.ground && (p.ground.dx || p.ground.dy)){ p.x += p.ground.dx; p.y += p.ground.dy; }
@@ -40,9 +44,71 @@ export function stepPlayer(p, inp, dt, world, ev){
   p.dashCD = Math.max(0, p.dashCD - dt);
   p.lock = Math.max(0, p.lock - dt);
   p.invuln = Math.max(0, p.invuln - dt);
+  p.climbCD = Math.max(0, p.climbCD - dt);
 
   const ctl = p.lock <= 0;
   const dir = ctl ? ((inp.right ? 1 : 0) - (inp.left ? 1 : 0)) : 0;
+
+  // ---------- лианы: хват (уровень 1 — world.vines пуст/отсутствует, ветка не выполняется) ----------
+  // climbCD — короткий «иммунитет» к повторному хвату сразу после отскока/отпускания/рывка с лианы:
+  // без него отскок уносит на несколько сантиметров за шаг, героиня ещё в зоне той же лианы и хватается
+  // снова мгновенно (вместо отскока — залипание на месте).
+  const vines = world.vines;
+  if (!p.climbing && vines && vines.length && p.dashT <= 0 && p.climbCD <= 0 && ctl){
+    for (const v of vines){
+      if (p.x + hw <= v.x0 - P.climbGrabTol || p.x - hw >= v.x1 + P.climbGrabTol) continue;
+      if (p.y + P.h <= v.y0 || p.y >= v.y1) continue;
+      if (p.grounded && !inp.up) continue;                 // на земле хватается только по ↑
+      p.climbing = true; p.climbVine = v; p.climbSide = v.side;
+      p.vx = 0; p.vy = 0; p.dashT = 0; p.jumping = false;
+      p.grounded = false; p.ground = null; p.coyote = 0; p.buffer = 0;
+      p.y = Math.max(v.y0, Math.min(v.y1, p.y));
+      inp.jumpPressed = false;              // ↑ у входа мог синтетически нажать «прыжок» (алиас в input.js) — гасим
+      break;
+    }
+  }
+
+  // ---------- лианы: пока висим/лезем (отпустить можно только своим действием — ←/→, прыжок или рывок) ----------
+  if (p.climbing){
+    const v = p.climbVine;
+    {
+      p.climbSide = v.side;
+      p.facing = -v.side;                                   // корпус развёрнут к стене — читает rizy-toy
+      if (ctl && dir !== 0 && dir === v.side){
+        // отпустить — шаг от стены
+        p.climbing = false; p.climbCD = P.climbCooldown;
+        p.grounded = false; p.ground = null;
+        p.vx = dir * P.climbReleasePush; p.facing = dir;
+      } else if (ctl && inp.dashPressed && p.dashCD <= 0){
+        // рывок прямо с лианы
+        inp.dashPressed = false;
+        p.climbing = false; p.climbCD = P.climbCooldown;
+        p.dashDir = dir || v.side;
+        p.facing = p.dashDir;
+        p.dashT = P.dashT; p.vy = 0;
+        p.grounded = false; p.ground = null;
+        ev.push("dash");
+      } else if (ctl && inp.jumpPressed){
+        inp.jumpPressed = false;
+        // отскок от лианы: вверх и в сторону, от стены
+        p.climbing = false; p.climbCD = P.climbCooldown;
+        p.vy = P.climbHopY; p.vx = v.side * P.climbHopX; p.facing = v.side;
+        p.grounded = false; p.ground = null; p.jumping = true;
+        p.canDouble = true; p.airDash = true; p.buffer = 0;
+        ev.push("jump");
+      } else {
+        const climbDir = ctl ? ((inp.up ? 1 : 0) - (inp.down ? 1 : 0)) : 0;
+        p.climbV = climbDir;
+        p.vy = climbDir * P.climbSpeed; p.vx = 0;
+        p.y = Math.min(v.y1, Math.max(v.y0, p.y + p.vy * dt));
+        p.x = v.cx;
+        p.canDouble = true; p.airDash = true; p.jumping = false;
+        p.airT = 0; p.fallFrom = p.y; p.coyote = 0;
+        return;                                              // на лиане — обычная физика/столкновения не нужны
+      }
+    }
+  }
+  if (!p.climbing) p.climbV = 0;
 
   // ---------- рывок ----------
   if (inp.dashPressed){
@@ -101,7 +167,6 @@ export function stepPlayer(p, inp, dt, world, ev){
 
   // ---------- движение по X ----------
   p.x += p.vx * dt;
-  const hw = P.w * 0.5;
   for (const r of world.solids){
     if (!overlapY(p, r) || !overlapX(p, r)) continue;
     // выталкиваем в сторону, откуда пришли (по центру прошлой позиции)

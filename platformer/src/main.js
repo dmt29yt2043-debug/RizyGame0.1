@@ -1,16 +1,19 @@
 // РИЗИ · Кристальный путь — 2.5D-платформер. Бутстрап, фиксированный шаг 1/120, игровая логика
 // (кристаллы, Гасители, факелы, сердечки, победа), камера, звук и «сок», фоторежим, window.PLAT.
-// Физика — src/physics.js, уровень — src/level.js, проверка проходимости — src/check.js (+ tools/check.mjs).
+// Физика — src/physics.js, уровни — src/levels/* (реестр src/levels/index.js), проверка проходимости —
+// src/check.js (+ tools/check.mjs). Несколько уровней: мир пересобирается функциями buildLevel/teardownLevel
+// без перезагрузки страницы; прогресс — src/save.js (localStorage).
 import * as THREE from "three";
 import { installNeutralToneMapping } from "../../run/src/look/tonemap.js";
 import { PHYS, GAME, CAM, QUALITY, PAL } from "./config.js";
-import { LEVEL, buildWorld, setMovers, enemyPos } from "./level.js";
+import { buildWorld, setMovers, enemyPos } from "./level.js";
 import { createPlayer, stepPlayer, groundAt } from "./physics.js";
 import { checkLevel, formatReport } from "./check.js";
 import { createRizy } from "./rizy.js";
 import { createSky, createBackdrop, createEnvironment, bgReady } from "./look/sky.js";
 import { buildWalls, placeMovers } from "./look/walls.js";
 import { createFlowers } from "./look/flowers.js";
+import { createClimbVines } from "./look/vines.js";
 import { createCrystals, createHeart } from "./look/crystals.js";
 import { createEnemies, ENEMY_R } from "./look/enemies.js";
 import { createTorches, createSigns, createBlobs } from "./look/props.js";
@@ -21,12 +24,15 @@ import { glowTexture, blobTexture, feltTexture, makeRng } from "./look/tex.js";
 import { createAudio } from "./audio.js";
 import { createInput } from "./input.js";
 import { createHud, fmtTime } from "./hud.js";
+import { LEVELS, getLevelDef, nextLevelOf } from "./levels/index.js";
+import { loadProgress, isUnlocked, unlock, setLastLevel, setQuality as saveQuality, saveLevelBest, getBest } from "./save.js";
 
 window.PLAT_BOOT = true;                 // модуль загрузился (сторож в index.html)
 const qp = new URLSearchParams(location.search);
 const SHOT = qp.get("shot") === "1";
-const QNAME = ["low", "med", "high"].includes(qp.get("q")) ? qp.get("q") : "med";
-const QC = QUALITY[QNAME];
+const progress = loadProgress();
+let QNAME = ["low", "med", "high"].includes(qp.get("q")) ? qp.get("q") : (progress.quality || "med");
+let QC = QUALITY[QNAME];
 const DT = PHYS.dt;
 const $ = id => document.getElementById(id);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -38,7 +44,7 @@ try { await Promise.race([document.fonts.load('900 40px "RizyNunito"'), new Prom
 
 // ---------- РЕНДЕР ----------
 const renderer = new THREE.WebGLRenderer({ antialias: !QC.post, powerPreference: "high-performance", preserveDrawingBuffer: SHOT });
-const DPR = Math.min(devicePixelRatio || 1, QC.dprMax);
+let DPR = Math.min(devicePixelRatio || 1, QC.dprMax);
 renderer.setPixelRatio(DPR);
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -53,8 +59,8 @@ const camera = new THREE.PerspectiveCamera(CAM.fov, innerWidth / innerHeight, 0.
 scene.add(camera);
 
 // ---------- СВЕТ ----------
-// тёплый закатный ключевой свет справа-сверху (почти белый персик — сливки остаются сливками, не розовеют)
-// + лавандовое небо / тёплый золотистый отскок снизу; основной «цвет заката» на металле даёт IBL-окружение
+// уровень 1: тёплый закатный ключевой свет справа-сверху; уровень 2: холодный лунный свет слева-сверху +
+// фиолетовый заполняющий (цвета меняются в applyLook() при переключении уровня — см. loadLevel).
 const hemi = new THREE.HemisphereLight(PAL.hemiSky, PAL.hemiGround, 0.95);
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(PAL.keyLight, 2.1);
@@ -67,53 +73,149 @@ if (QC.shadows){
   sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.02;
 }
 
-// ---------- МИР ----------
-const world = buildWorld(LEVEL);
+// ---------- ОБЩИЕ ДЛЯ ВСЕХ УРОВНЕЙ РЕСУРСЫ (не пересобираются при смене уровня) ----------
 const glowTex = glowTexture(), blobTex = blobTexture(), feltTex = feltTexture(renderer);
-const bloomOn = QC.post && QC.bloom > 0;
-
-const sky = createSky(camera);
-const backdrop = createBackdrop(LEVEL);
-scene.add(backdrop.group);
-await bgReady();          // дождаться PNG-слоёв задника перед первым кадром (важно для фоторежима)
-// окружение для PBR-отражений (золото, хром, кристаллы): закатная панорама sky-city.png через PMREM
-// (если картинка не загрузилась — процедурный закатный градиент)
-const envTex = createEnvironment(renderer, sky.texture);
-scene.environment = envTex;
-const walls = buildWalls(LEVEL, renderer);
-scene.add(walls.group);
-if (QC.shadows) walls.group.traverse(o => { if (o.isMesh) o.receiveShadow = true; });
-const flowers = createFlowers(LEVEL, { density: QNAME === "low" ? 0.6 : 1 });
-scene.add(flowers.group);
-
-const torchGround = LEVEL.torches.map(t => groundAt(world, t.x));
-const signGround = LEVEL.signs.map(s => groundAt(world, s.x));
-const heartGround = groundAt(world, LEVEL.heart.x);
-const crystals = createCrystals(LEVEL, { glowTex, env: envTex, halos: QC.halos, bloom: bloomOn });
-scene.add(crystals.group);
-const heart = createHeart(LEVEL, heartGround, { glowTex, env: envTex, bloom: bloomOn });
-scene.add(heart.group);
-const enemies = createEnemies(LEVEL, { feltTex, glowTex, bloom: bloomOn });
-scene.add(enemies.group);
-if (QC.shadows) enemies.group.traverse(o => { if (o.isMesh) o.castShadow = true; });
-const torches = createTorches(LEVEL, torchGround, { glowTex, bloom: bloomOn });
-scene.add(torches.group);
-scene.add(createSigns(LEVEL, signGround, renderer));
-const blobs = createBlobs(1 + LEVEL.enemies.length, blobTex);
-scene.add(blobs.mesh);
+const SHARED_TEX = new Set([glowTex, blobTex, feltTex]);
 const fx = createFx(QC.particles);
 scene.add(fx.group);
 const ghosts = createGhosts(4);
 scene.add(ghosts.group);
 let ghostT = 0, ghostPending = false;
-
-// ---------- РИЗИ ----------
-const rizy = createRizy({ quality: QNAME });
+let rizy = createRizy({ quality: QNAME });
 scene.add(rizy.root);
 if (QC.shadows) rizy.root.traverse(o => { if (o.isMesh) o.castShadow = true; });
+let post = QC.post ? createPost(renderer, scene, camera, { bloom: QC.bloom, samples: 4, dof: !!QC.dof }) : null;
 
-// ---------- ПОСТ ----------
-const post = QC.post ? createPost(renderer, scene, camera, { bloom: QC.bloom, samples: 4, dof: !!QC.dof }) : null;
+// ---------- ПЕРЕСБОРКА МИРА ПРИ СМЕНЕ УРОВНЯ ----------
+// Эти привязки модульного уровня переустанавливает loadLevel(); весь остальной код (interactions,
+// simStep, updateVisuals…) читает их по имени, как раньше читал константы одного уровня 1.
+let LEVEL, world, sky, backdrop, envTex, walls, flowers, vines, crystals, heart, enemies, torches, signsGroup, blobs;
+let torchGround, signGround, heartGround, enemyPosBuf;
+let activeDef = null, builtBundle = null;
+
+function disposeGroup(root, keep){
+  root.traverse(o => {
+    if (!o.isMesh && !o.isPoints) return;
+    if (o.geometry) o.geometry.dispose();
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    for (const m of mats){
+      if (!m) continue;
+      for (const k of ["map", "bumpMap", "normalMap", "roughnessMap", "metalnessMap", "alphaMap", "emissiveMap", "envMap"]){
+        const t = m[k];
+        if (t && t.isTexture && !keep.has(t)) t.dispose();
+      }
+      m.dispose();
+    }
+  });
+}
+
+// строит новый мир полностью (не трогая текущий, пока он ещё виден) — на входе описание уровня из реестра
+async function buildLevel(def){
+  const level = def.data;
+  const world = buildWorld(level);
+  const bloomOn = QC.post && QC.bloom > 0;
+  const sky = createSky(camera, { dir: def.bgDir, night: def.night });
+  const backdrop = createBackdrop(level, { dir: def.bgDir, night: def.night });
+  await bgReady();          // дождаться PNG-слоёв задника перед первым кадром (важно для фоторежима)
+  const envTex = createEnvironment(renderer, sky.texture, { night: def.night });
+  const walls = buildWalls(level, renderer);
+  if (QC.shadows) walls.group.traverse(o => { if (o.isMesh) o.receiveShadow = true; });
+  const flowers = createFlowers(level, { density: QNAME === "low" ? 0.6 : 1, biolum: def.look.biolumFlowers });
+  const vines = createClimbVines(level, { glowTex, bloom: bloomOn, biolum: def.look.biolumFlowers });
+
+  const torchGround = level.torches.map(t => groundAt(world, t.x));
+  const signGround = level.signs.map(s => groundAt(world, s.x));
+  const heartGround = groundAt(world, level.heart.x);
+  const crystals = createCrystals(level, { glowTex, env: envTex, halos: QC.halos, bloom: bloomOn });
+  const heart = createHeart(level, heartGround, { glowTex, env: envTex, bloom: bloomOn, ...def.look.heart });
+  const enemies = createEnemies(level, { feltTex, glowTex, bloom: bloomOn });
+  if (QC.shadows) enemies.group.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  const torches = createTorches(level, torchGround, { glowTex, bloom: bloomOn });
+  const signsGroup = createSigns(level, signGround, renderer);
+  const blobs = createBlobs(1 + level.enemies.length, blobTex);
+  const enemyPosBuf = level.enemies.map(() => ({ x: 0, y: 0, dir: 1 }));
+
+  return { def, level, world, sky, backdrop, envTex, walls, flowers, vines, crystals, heart, enemies, torches, signsGroup, blobs, torchGround, signGround, heartGround, enemyPosBuf };
+}
+
+function addBundleToScene(b){
+  scene.add(b.backdrop.group, b.walls.group, b.flowers.group, b.vines.group, b.crystals.group, b.heart.group, b.enemies.group, b.torches.group, b.signsGroup, b.blobs.mesh);
+}
+function teardownBundle(b){
+  for (const g of [b.walls.group, b.flowers.group, b.vines.group, b.crystals.group, b.heart.group, b.enemies.group, b.torches.group, b.signsGroup, b.blobs.mesh]){
+    scene.remove(g); disposeGroup(g, SHARED_TEX);
+  }
+  scene.remove(b.backdrop.group); b.backdrop.dispose();
+  b.sky.dispose();
+  if (b.envTex) b.envTex.dispose();
+}
+
+function applyLook(look){
+  hemi.color.set(look.hemiSky); hemi.groundColor.set(look.hemiGround); hemi.intensity = look.hemiI;
+  sun.color.set(look.keyLight); sun.intensity = look.sunI;
+  scene.fog = look.fog ? new THREE.Fog(look.fog.color, look.fog.near, look.fog.far) : null;
+}
+
+let loadingLevel = false;
+async function loadLevel(id){
+  const def = getLevelDef(id);
+  const fresh = await buildLevel(def);
+  addBundleToScene(fresh);
+  scene.environment = fresh.envTex;
+  applyLook(def.look);
+  ({ level: LEVEL, world, sky, backdrop, envTex, walls, flowers, vines, crystals, heart, enemies, torches, signsGroup, blobs,
+     torchGround, signGround, heartGround, enemyPosBuf } = fresh);
+  if (builtBundle) teardownBundle(builtBundle);
+  builtBundle = fresh;
+  activeDef = def;
+  setLastLevel(progress, id);
+  hud.setLevelMeta({ totalCrystals: LEVEL.crystals.length, totalStars: LEVEL.stars.length });
+  G.best = getBest(progress, id);
+  hud.setBest(bestText(G.best));
+  resetGameStateForLevel();
+}
+
+// «Играть» и первая загрузка страницы продолжают с уровня, на котором игрок был в прошлый раз
+// (progress.lastLevel, сохраняется в loadLevel() при каждом переключении) — не всегда с уровня 1.
+function lastPlayableLevel(){
+  const id = progress.lastLevel || 1;
+  return LEVELS.some(lv => lv.id === id) ? id : 1;
+}
+function buildLevelsMeta(){
+  return LEVELS.map(lv => {
+    const unlocked = isUnlocked(progress, lv.id);
+    const best = getBest(progress, lv.id);
+    const prereq = lv.unlock ? getLevelDef(lv.unlock) : null;
+    return {
+      id: lv.id, title: lv.title, unlocked,
+      totalCrystals: lv.data.crystals.length, totalStars: lv.data.stars.length,
+      crystals: best ? best.crystals : 0, stars: best ? best.stars : 0,
+      best: best ? best.time : null,
+      lockedHint: prereq ? `Пройди «${prereq.title}»` : "",
+    };
+  });
+}
+
+// ---------- КАЧЕСТВО ГРАФИКИ ----------
+function applyQuality(qname){
+  if (!["low", "med", "high"].includes(qname) || qname === QNAME) return;
+  QNAME = qname; QC = QUALITY[QNAME];
+  saveQuality(progress, QNAME);
+  DPR = Math.min(devicePixelRatio || 1, QC.dprMax);
+  renderer.setPixelRatio(DPR);
+  renderer.shadowMap.enabled = !!QC.shadows;
+  if (post) post.dispose && post.dispose();
+  post = QC.post ? createPost(renderer, scene, camera, { bloom: QC.bloom, samples: 4, dof: !!QC.dof }) : null;
+  onResize();
+  // Ризи пересобирается под новое качество (геометрия зависит от Q на постройке); мир текущего уровня
+  // подхватит новое качество (bloom/halos/density) при следующей пересборке — «Играть»/«Заново»/смена уровня.
+  const oldRoot = rizy.root; const oldRizy = rizy;
+  rizy = createRizy({ quality: QNAME });
+  scene.add(rizy.root);
+  if (QC.shadows) rizy.root.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  scene.remove(oldRoot); oldRizy.dispose();
+  hud.setQuality(QNAME);
+}
 
 // ---------- СОСТОЯНИЕ ----------
 const G = {
@@ -123,30 +225,29 @@ const G = {
   playT: 0,                 // таймер забега
   hearts: GAME.hearts,
   crystals: 0,
-  stars: LEVEL.stars.map(() => false),
-  checkpoint: { x: LEVEL.start.x, y: LEVEL.start.y, idx: 0 },
+  stars: [],
+  checkpoint: { x: 0, y: 0, idx: 0 },
   combo: 0, lastCrystalT: -9,
   dying: 0, won: false, winT: 0,
   hitstop: 0, shake: 0, flash: 0, flashCol: [1, 1, 1],
   fadeT: 0,
   section: -1,
-  best: loadBest(),
+  best: null,
   record: false,
 };
-let player = createPlayer(LEVEL.start.x, LEVEL.start.y);
-const inp = { left: false, right: false, jump: false, jumpPressed: false, dashPressed: false };
+let player = createPlayer(0, 0);
+const inp = { left: false, right: false, up: false, down: false, jump: false, jumpPressed: false, dashPressed: false };
 const stepEv = [];
 const frameEv = [];
 
-function loadBest(){ try { return JSON.parse(localStorage.getItem(GAME.bestKey) || "null"); } catch (e){ return null; } }
-function saveBest(b){ if (SHOT) return; try { localStorage.setItem(GAME.bestKey, JSON.stringify(b)); } catch (e){} }
 const bestText = b => b ? `Лучшее: ${fmtTime(b.time)} · кристаллы ${b.crystals}/${LEVEL.crystals.length} · звёздные ${b.stars}/${LEVEL.stars.length}` : "";
 
 // ---------- ЗВУК, HUD, ВВОД ----------
 const audio = createAudio();
-const hud = createHud({ root: $("wrap"), totalCrystals: LEVEL.crystals.length, totalStars: LEVEL.stars.length, hearts: GAME.hearts, onCommand });
+const bootDef = getLevelDef(qp.has("level") ? clamp(+qp.get("level") || 1, 1, LEVELS.length) : lastPlayableLevel());
+const hud = createHud({ root: $("wrap"), totalCrystals: bootDef.data.crystals.length, totalStars: bootDef.data.stars.length, hearts: GAME.hearts, onCommand });
 hud.setVolume(audio.volume);
-hud.setBest(bestText(G.best));
+hud.setQuality(QNAME);
 const input = createInput({ onAction, menuOpen: () => G.paused || G.mode !== "play" });
 for (const [k, b] of Object.entries(hud.touchButtons)) input.bindTouchButton(b, k);
 if (matchMedia && matchMedia("(pointer: coarse)").matches && !matchMedia("(pointer: fine)").matches) hud.touchMode(true);
@@ -155,21 +256,48 @@ function onCommand(cmd, arg){
   audio.unlock();
   if (cmd !== "volume") audio.play("click");
   if (cmd === "play") startGame();
+  else if (cmd === "levels"){ hud.levels(buildLevelsMeta()); hud.show("levels"); }
+  else if (cmd === "settings"){ hud.setQuality(QNAME); hud.show("settings"); }
+  else if (cmd === "backtitle") hud.show("title");
+  else if (cmd === "selectlevel") startGame(+arg);
+  else if (cmd === "quality") applyQuality(arg);
   else if (cmd === "pause") { if (G.mode === "play") setPause(!G.paused); }
   else if (cmd === "resume") setPause(false);
   else if (cmd === "retry") { setPause(false); respawn(false); }
   else if (cmd === "restart") { setPause(false); restartLevel(); }
   else if (cmd === "continue") continueFromCheckpoint();
   else if (cmd === "again") restartLevel();
+  else if (cmd === "nextlevel") { const nd = nextLevelOf(activeDef.id); if (nd) startGame(nd.id); }
   else if (cmd === "volume") audio.setVolume(arg);
 }
 
-function onAction(a, down){
+function onAction(a, down, src){
   if (down && a !== "blur") audio.unlock();
   if (a === "blur"){ if (G.mode === "play" && !G.paused && !SHOT) setPause(true); return; }
   if (a === "touchmode"){ hud.touchMode(true); return; }
-  if (a === "pause"){ if (down && G.mode === "play") setPause(!G.paused); return; }
-  if (G.mode === "title"){ if (down && (a === "enter" || a === "jump" || a === "click")) startGame(); return; }
+  if (a === "pause"){
+    if (!down) return;
+    if (G.mode === "play"){ setPause(!G.paused); return; }
+    if (G.mode === "title" && (hud.screen === "levels" || hud.screen === "settings")) onCommand("backtitle");
+    return;
+  }
+  if (G.mode === "title"){
+    if (!down) return;
+    const scr = hud.screen;
+    if (scr === "title"){
+      if (a === "up") hud.menuMove(-1);
+      else if (a === "down") hud.menuMove(1);
+      else if (a === "enter" || a === "jump" || a === "click") hud.activate();
+      return;
+    }
+    if (scr === "levels" || scr === "settings"){
+      if (a === "up") hud.menuMove(-1);
+      else if (a === "down") hud.menuMove(1);
+      else if (a === "left" || a === "right") hud.menuSide(a === "left" ? -1 : 1);
+      else if (a === "enter" || a === "jump" || a === "click") hud.activate();
+    }
+    return;
+  }
   if (G.paused){
     if (!down) return;
     if (a === "up") hud.menuMove(-1);
@@ -180,21 +308,39 @@ function onAction(a, down){
     return;
   }
   if (G.mode === "over"){ if (down && (a === "enter" || a === "jump" || a === "retry" || a === "click")) continueFromCheckpoint(); return; }
-  if (G.mode === "win"){ if (down && G.winT < -0.6 && (a === "enter" || a === "jump" || a === "retry" || a === "click")) restartLevel(); return; }
-  // игра: фронты нажатий (зажатое читается в шаге из input.isHeld)
-  if (a === "jump" && down) inp.jumpPressed = true;
+  if (G.mode === "win"){
+    if (!down || G.winT >= -0.6) return;
+    if (a === "up") hud.menuMove(-1);
+    else if (a === "down") hud.menuMove(1);
+    else if (a === "enter" || a === "jump" || a === "retry" || a === "click") hud.activate();
+    return;
+  }
+  // игра: фронты нажатий (зажатое читается в шаге из input.isHeld); ↑ дублирует прыжок (см. input.js) —
+  // на лиане это гасится в physics.js, чтобы подъём по ↑ не превращался в отскок
+  if (a === "jump" && down){
+    if (src && src.endsWith(":j") && player.climbing) { /* лезем по лиане — не прыжок */ }
+    else inp.jumpPressed = true;
+  }
   if (a === "dash" && down) inp.dashPressed = true;
   if (a === "retry" && down && G.dying <= 0) respawn(false);   // пока героиня «падает без сил» — R не спасает
 }
 
 // ---------- ПЕРЕХОДЫ СОСТОЯНИЙ ----------
-function startGame(){
-  if (G.mode !== "title") return;
-  G.mode = "play";
-  hud.show(null);
-  audio.play("start");
-  audio.music(true);
-  enterSection(0);
+// levelId задан явно — из «Уровни» (выбор карточки) или с экрана победы («Следующий уровень», mode ещё "win");
+// без аргумента — «Играть» с титула, только пока мы на титуле.
+async function startGame(levelId){
+  if (loadingLevel) return;
+  if (!(G.mode === "title" || (levelId && G.mode === "win"))) return;
+  loadingLevel = true;
+  try {
+    const id = levelId || lastPlayableLevel();
+    await loadLevel(id);
+    G.mode = "play";
+    hud.show(null);
+    audio.play("start");
+    audio.music(true);
+    enterSection(0);
+  } finally { loadingLevel = false; }
 }
 function setPause(on){
   if (G.mode !== "play" || G.paused === on) return;
@@ -226,6 +372,15 @@ function continueFromCheckpoint(){
   hud.show(null);
   respawn(false);
   audio.music(true);
+}
+function resetGameStateForLevel(){
+  G.mode = "title"; G.paused = false; G.won = false; G.winT = 0; G.dying = 0;
+  G.hearts = GAME.hearts; G.crystals = 0; G.stars = LEVEL.stars.map(() => false);
+  G.playT = 0; G.combo = 0; G.lastCrystalT = -9; G.section = -1; G.record = false; G.time = 0;
+  G.checkpoint = { x: LEVEL.start.x, y: LEVEL.start.y, idx: 0 };
+  resetPlayerAt(LEVEL.start.x, LEVEL.start.y);
+  G.fadeT = GAME.respawnFade; cam.snap = true;
+  fx.clear(); ghosts.clear();
 }
 function restartLevel(){
   G.mode = "play"; G.paused = false; G.won = false; G.winT = 0; G.dying = 0;
@@ -264,6 +419,8 @@ function simStep(dt){
     if (playing) G.playT += dt;
     inp.left = playing && input.isHeld("left");
     inp.right = playing && input.isHeld("right");
+    inp.up = playing && input.isHeld("up");
+    inp.down = playing && input.isHeld("down");
     inp.jump = playing && input.isHeld("jump");
     if (!playing){ inp.jumpPressed = inp.dashPressed = false; }
     stepEv.length = 0;
@@ -278,7 +435,7 @@ function simStep(dt){
     inp.left = inp.right = inp.jump = false;
     stepEv.length = 0; stepPlayer(p, inp, dt, world, stepEv);
   } else {
-    // титул / «ещё раз»: героиня стоит
+    // титул / меню / «ещё раз»: героиня стоит
     inp.left = inp.right = inp.jump = false; inp.jumpPressed = inp.dashPressed = false;
     stepEv.length = 0; stepPlayer(p, inp, dt, world, stepEv);
   }
@@ -317,7 +474,7 @@ function interactions(){
     const e = enemyPos(LEVEL.enemies[i], G.time);
     const r = ENEMY_R;
     if (Math.abs(e.x - p.x) < hw + r * 0.85 && e.y + r * 0.85 > p.y && e.y - r * 0.85 < p.y + PHYS.h){
-      if (p.vy < 0 && p.py >= e.y - 0.05 && p.dashT <= 0) stomp(i, e);
+      if (p.vy < 0 && p.py >= e.y - 0.05 && p.dashT <= 0 && !p.climbing) stomp(i, e);
       else if (p.invuln <= 0) hurt(e.x);
     }
   }
@@ -378,6 +535,7 @@ function hurt(fromX){
   p.invuln = PHYS.invuln; p.lock = PHYS.hurtLock;
   const dir = Math.sign(p.x - fromX) || -p.facing;
   p.vx = dir * PHYS.hurtKnockX; p.vy = PHYS.hurtKnockY; p.dashT = 0; p.grounded = false; p.ground = null; p.jumping = false;
+  p.climbing = false;
   audio.play("hurt");
   fx.hurt(p.x, p.y + 0.9);
   frameEv.push("hurt");
@@ -401,23 +559,22 @@ function win(){
   fx.confetti(LEVEL.heart.x, heartGround + LEVEL.heart.pedestal + 1.2);
   frameEv.push("win");
   G.flash = 0.5; G.flashCol = [1, 0.95, 1];
-  // лучший результат
-  const stars = G.stars.filter(Boolean).length;
-  const b = G.best;
-  const better = !b || G.playT < b.time;
-  G.record = better && !SHOT;
-  const nb = { time: better ? G.playT : b.time, crystals: Math.max(G.crystals, b ? b.crystals : 0), stars: Math.max(stars, b ? b.stars : 0) };
-  G.best = nb; saveBest(nb);
-  hud.setBest(bestText(nb));
+  const starsN = G.stars.filter(Boolean).length;
+  G.record = !SHOT && saveLevelBest(progress, activeDef.id, { time: G.playT, crystals: G.crystals, stars: starsN });
+  const nb = SHOT ? G.best : getBest(progress, activeDef.id);
+  G.best = nb; hud.setBest(bestText(nb));
+  const nd = nextLevelOf(activeDef.id);
+  if (nd && !SHOT) unlock(progress, nd.id);
 }
 function showWin(){
   G.mode = "win"; G.winT = 0;
-  hud.win({ crystals: G.crystals, total: LEVEL.crystals.length, stars: G.stars, time: G.playT, best: bestText(G.best), record: G.record });
+  const nd = nextLevelOf(activeDef.id);
+  hud.win({ crystals: G.crystals, total: LEVEL.crystals.length, stars: G.stars, time: G.playT, best: bestText(G.best), record: G.record, hasNext: !!nd });
   hud.show("win");
 }
 
 // ---------- КАМЕРА ----------
-const cam = { x: LEVEL.start.x + 2, y: LEVEL.start.y, ty: LEVEL.start.y, lead: CAM.lead * 0.6, snap: true };
+const cam = { x: 0, y: 0, ty: 0, lead: CAM.lead * 0.6, snap: true };
 function updateCamera(dt, px, py){
   const p = player;
   const moving = Math.abs(p.vx) > 0.6;
@@ -446,7 +603,6 @@ function updateCamera(dt, px, py){
 
 // ---------- ВИЗУАЛ КАДРА ----------
 const EV_PRI = ["win", "hurt", "dash", "djump", "jump", "land", "collect"];
-const enemyPosBuf = LEVEL.enemies.map(() => ({ x: 0, y: 0, dir: 1 }));
 const vrnd = makeRng(99);                 // свой ГСЧ для «декоративных» искр — фоторежим повторяем
 function updateVisuals(dt, alpha){
   const p = player;
@@ -457,12 +613,13 @@ function updateVisuals(dt, alpha){
   let ev = null;
   for (const k of EV_PRI) if (frameEv.includes(k)){ ev = k; break; }
   frameEv.length = 0;
-  rizy.update(dt, { speed: Math.min(1, Math.abs(p.vx) / PHYS.maxRun), vy: p.vy, grounded: p.grounded, facing: p.facing, dashing: p.dashT > 0, event: ev, time: G.time });
+  rizy.update(dt, { speed: Math.min(1, Math.abs(p.vx) / PHYS.maxRun), vy: p.vy, grounded: p.grounded, facing: p.facing, dashing: p.dashT > 0, event: ev, time: G.time, climbing: p.climbing, climbV: p.climbV });
 
   placeMovers(walls.moverMeshes, world, alpha);
   crystals.update(G.time);
   heart.update(G.time);
   torches.update(G.time);
+  if (vines.update) vines.update(G.time);
   for (let i = 0; i < LEVEL.enemies.length; i++){ const e = enemyPos(LEVEL.enemies[i], G.time); enemyPosBuf[i].x = e.x; enemyPosBuf[i].y = e.y; enemyPosBuf[i].dir = e.dir; }
   enemies.update(G.time, enemyPosBuf);
 
@@ -536,16 +693,15 @@ function onResize(){
   const w = innerWidth, h = innerHeight;
   renderer.setSize(w, h);
   camera.aspect = w / h; camera.updateProjectionMatrix();
-  sky.fit(camera.aspect);
+  if (sky) sky.fit(camera.aspect);
   if (post) post.setSize(w, h, DPR);
   if (!looping && !SHOT) draw();
 }
 addEventListener("resize", onResize);
-onResize();
 
 // ---------- ФОТОРЕЖИМ ----------
-// ?shot=1&at=СЕК[&x=ПОЗИЦИЯ][&script=R0-2,J0.4-0.8,D0.6][&title=1][&pause=1][&q=..][&hideui=1]
-// script: L/R — бег влево/вправо, J — прыжок (зажат), D — рывок; «a-b» — удержание с a по b с, «a» — короткое нажатие.
+// ?shot=1&at=СЕК[&x=ПОЗИЦИЯ][&script=R0-2,J0.4-0.8,D0.6][&title=1][&screen=levels][&pause=1][&level=2][&q=..][&hideui=1]
+// script: L/R — бег влево/вправо, J — прыжок (зажат), D — рывок, U — вверх/лезть; «a-b» — удержание, «a» — короткое нажатие.
 function parseScript(s){
   const out = [];
   for (const part of (s || "").split(",").map(x => x.trim()).filter(Boolean)){
@@ -591,6 +747,14 @@ async function runShot(){
     document.title = "SHOT_READY";
     return;
   }
+  if (qp.get("screen") === "levels"){
+    hud.levels(buildLevelsMeta());
+    hud.show("levels");
+    simulate(at, []);
+    draw();
+    document.title = "SHOT_READY";
+    return;
+  }
   hud.show(null);
   G.mode = "play";
   G.section = 0;
@@ -604,18 +768,26 @@ async function runShot(){
 
 // ---------- ОТЛАДКА: window.PLAT ----------
 window.PLAT = {
-  G, level: LEVEL, world, quality: QNAME,
+  G, get level(){ return LEVEL; }, get world(){ return world; }, get quality(){ return QNAME; },
   get player(){ return player; },
-  enemies: enemies.state, crystals: crystals.state, torches: torches.state,
+  get enemies(){ return enemies.state; }, get crystals(){ return crystals.state; }, get torches(){ return torches.state; },
+  levels: LEVELS,
   step(sec = DT){ simulate(sec, []); },
   sim(sec, script){ simulate(sec, parseScript(script)); return { x: player.x, y: player.y, mode: G.mode, hearts: G.hearts, crystals: G.crystals }; },
   render(){ draw(); return renderer.info.render.calls; },
   reset: () => restartLevel(),
   start: () => startGame(),
+  // отладочный прямой переход (в обход экрана победы/меню — для тестов и разработки): грузит уровень
+  // и сразу ставит режим "play", какой бы режим ни был текущим
+  async goLevel(id){ await loadLevel(id); G.mode = "play"; hud.show(null); enterSection(0); },
   pause: on => setPause(on === undefined ? !G.paused : !!on),
   press: (action, down = true) => input.press(action, down, "api"),
   teleport,
   check(){ const r = checkLevel(LEVEL); return formatReport(r); },
+  checkAll(){ return LEVELS.map(lv => `=== ${lv.title} ===\n` + formatReport(checkLevel(lv.data))).join("\n\n"); },
+  // прогресс (localStorage) — отладочный доступ для selftest.js (обычный игровой прогресс сохраняется
+  // из win()/onCommand("quality") и т.п.; SHOT-режим фоторежима эти сохранения намеренно не трогает)
+  progress, unlock: id => unlock(progress, id), saveBest: (id, r) => saveLevelBest(progress, id, r),
   // draw calls: сцена отдельно и весь кадр с постом
   drawCalls(){
     renderer.info.reset(); renderer.render(scene, camera);
@@ -627,6 +799,8 @@ window.PLAT = {
 };
 
 // ---------- СТАРТ ----------
+await loadLevel(qp.has("level") ? clamp(+qp.get("level") || 1, 1, LEVELS.length) : lastPlayableLevel());
+onResize();
 hud.show("title");
 cam.snap = true;
 updateVisuals(0, 1);

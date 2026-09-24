@@ -50,7 +50,7 @@ function leafGeometry(){
   return g;
 }
 
-export function createFlowers(level, { density = 1 } = {}){
+export function createFlowers(level, { density = 1, biolum = false } = {}){
   const group = new THREE.Group(); group.name = "flowers";
   const rnd = makeRng(2024);
   const R = (a, b) => a + (b - a) * rnd();
@@ -168,7 +168,17 @@ export function createFlowers(level, { density = 1 } = {}){
   });
   const heads = new THREE.InstancedMesh(headGeometry(), headMat, N);
   heads.name = "flower-heads";
-  const centers = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 6, 3), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.32, metalness: 0.15 }), N);
+  const centerMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.32, metalness: 0.15 });
+  // ночной уровень: цветы «биолюминесцентные» — серединки светятся собственным цветом (вершинный цвет × uGlow)
+  if (biolum){
+    centerMat.onBeforeCompile = sh => {
+      sh.uniforms.uGlow = { value: 1.1 };
+      sh.fragmentShader = sh.fragmentShader
+        .replace("#include <common>", "#include <common>\nuniform float uGlow;")
+        .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n#ifdef USE_INSTANCING_COLOR\n totalEmissiveRadiance += vColor.rgb * uGlow;\n#endif");
+    };
+  }
+  const centers = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 6, 3), centerMat, N);
   centers.name = "flower-centers";
   const leafMat = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.85, metalness: 0, sheen: 0.5, sheenRoughness: 0.6, sheenColor: new THREE.Color(0xc8f08a), envMapIntensity: 0.4, side: THREE.DoubleSide });
   const leaves = new THREE.InstancedMesh(leafGeometry(), leafMat, Math.max(1, NL));

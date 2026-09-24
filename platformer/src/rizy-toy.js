@@ -447,6 +447,7 @@ export function createRizyToy(opts = {}){
     sq: 0, sqV: 0,                      // пружина сплющивания: 0 — покой, <0 — сплющена, >0 — вытянута
     bun: [0, 0], bunV: [0, 0], vyPrev: 0,
     flipT: -1, blinkT: 2.2, blink: 0,
+    climb: 0, climbPhase: 0,            // лазание по лиане (уровень 2): вес позы + ритм рук/ног
   };
   const lerp = (a, b, k) => a + (b - a) * k;
   const damp = (a, b, l, dt) => a + (b - a) * (1 - Math.exp(-l * dt));
@@ -472,6 +473,10 @@ export function createRizyToy(opts = {}){
     st.dash = s.dashing ? 1 : damp(st.dash, 0, 10, dt);
     st.hurt = Math.max(0, st.hurt - dt * 1.6);
     st.collect = Math.max(0, st.collect - dt * 4);
+    // лазание по лиане (уровень 2): climbV — скорость подъёма/спуска −1..1 (0 — висит)
+    const climbing = !!s.climbing, climbV = Math.max(-1, Math.min(1, s.climbV || 0));
+    st.climb = damp(st.climb, climbing ? 1 : 0, 16, dt);
+    st.climbPhase += dt * (Math.abs(climbV) > 0.05 ? 3.2 + 4.2 * Math.abs(climbV) : 0.9);
 
     // пружина сплющивания
     st.sqV += (-260 * st.sq - 16 * st.sqV) * dt; st.sq += st.sqV * dt;
@@ -484,7 +489,8 @@ export function createRizyToy(opts = {}){
     const face = s.facing || 1;
     const moveK = Math.min(1, Math.max(grounded ? speed * 1.6 : 0.75, 0));
     const yawAbs = s.dashing ? 1.5 : 0.95 + (1.32 - 0.95) * moveK;
-    const target = st.win > 0 ? 0 : face * yawAbs;
+    let target = st.win > 0 ? 0 : face * yawAbs;
+    target = lerp(target, face * 2.2, st.climb);        // на лиане — почти спиной/боком к камере, видно подъём
     st.yaw = damp(st.yaw, target, 12, dt);
     root.rotation.y = st.yaw + (st.win > 0 ? Math.sin(st.t * 5) * 0.25 : 0);
 
@@ -507,8 +513,11 @@ export function createRizyToy(opts = {}){
       let rx = -sw * sgn * 0.85 * run;
       rx = lerp(rx, vy > 0 ? legAirUp[i] : legAirDown[i], air);
       rx = lerp(rx, 0.7, st.dash * 0.8);
+      // лазание: ноги подтягиваются попеременно (колени идут к стене), ритм — от скорости подъёма
+      const legClimb = Math.sin(st.climbPhase + i * PI) * 0.55 + 0.35;
+      rx = lerp(rx, legClimb, st.climb);
       legs[i].rotation.x = rx;
-      legs[i].rotation.z = (i ? 1 : -1) * (0.03 + air * 0.08);
+      legs[i].rotation.z = (i ? 1 : -1) * (0.03 + air * 0.08) * (1 - st.climb) + (i ? -1 : 1) * 0.12 * st.climb;
     }
     // руки — противофаза ногам; в прыжке вверх, в падении в стороны, в рывке назад
     for (let i = 0; i < 2; i++){
@@ -520,6 +529,10 @@ export function createRizyToy(opts = {}){
       rx = lerp(rx, 1.3, st.dash);
       rz = lerp(rz, side * 0.3, st.dash);
       if (st.win > 0){ rx = lerp(rx, -2.8, st.win); rz = lerp(rz, side * (0.5 + Math.sin(st.t * 10 + i * PI) * 0.2), st.win); }
+      // лазание: руки тянутся вверх поочерёдно (противофаза ногам той же стороны), вися — лёгкое покачивание
+      const armClimb = -1.6 - Math.max(0, Math.sin(st.climbPhase + i * PI + PI)) * 0.9;
+      rx = lerp(rx, armClimb, st.climb);
+      rz = lerp(rz, side * 0.22, st.climb);
       arms[i].rotation.set(rx, 0, rz);
     }
     // голова: лёгкий наклон и противовес, моргание

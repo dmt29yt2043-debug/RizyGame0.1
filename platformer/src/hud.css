@@ -133,6 +133,36 @@ canvas { display:block; width:100%; height:100%; touch-action:none; outline:none
 .pz-starline svg.got .f { fill:var(--lime); }
 .pz-record { display:inline-block; background:var(--lime); border:3px solid var(--ink); border-radius:12px; padding:3px 14px 5px; font-size:18px; box-shadow:0 4px 0 var(--ink); }
 
+/* ---------- экран уровней ---------- */
+#scrLevels .pz-card { max-width:760px; }
+.pz-levels { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:14px; width:100%; margin:6px 0; }
+.pz-lvl-card { pointer-events:auto; cursor:pointer; text-align:left; font:inherit; font-weight:900; color:var(--ink);
+  background:#f6f7ff; border:3px solid var(--ink); border-radius:18px; padding:14px 16px; box-shadow:0 5px 0 var(--ink);
+  display:flex; flex-direction:column; gap:8px; transition:transform .08s; }
+.pz-lvl-card:not(:disabled):hover, .pz-lvl-card.sel { background:#fff; box-shadow:0 5px 0 var(--ink), 0 0 0 4px var(--lime); }
+.pz-lvl-card:not(:disabled):active { transform:translateY(3px); box-shadow:0 2px 0 var(--ink); }
+.pz-lvl-card:disabled { cursor:default; opacity:.7; }
+.pz-lvl-card.locked { background:#eceefb; }
+.pz-lvl-top { display:flex; align-items:center; gap:8px; font-size:18px; line-height:1.2; }
+.pz-lvl-top svg { width:20px; height:20px; flex:none; }
+.pz-lvl-stars { display:flex; gap:3px; }
+.pz-lvl-stars svg { width:20px; height:20px; }
+.pz-lvl-stars svg .f { fill:#dcdcec; }
+.pz-lvl-stars svg.got .f { fill:var(--lime); }
+.pz-lvl-row { display:flex; align-items:center; gap:6px; font-size:14px; font-weight:800; color:var(--muted); }
+.pz-lvl-row svg { width:18px; height:18px; }
+.pz-lvl-hint { font-size:13px; font-weight:700; color:var(--muted); line-height:1.4; }
+#levelsBack { pointer-events:auto; margin-top:4px; }
+
+/* ---------- настройки: качество графики ---------- */
+.pz-quality { pointer-events:auto; display:flex; align-items:center; gap:12px; padding:10px 16px; border:3px solid var(--ink); border-radius:16px; background:#f6f7ff; justify-content:space-between; }
+.pz-quality.sel { box-shadow:0 0 0 4px var(--lime); }
+.pz-quality > span { font-size:17px; }
+.pz-qopts { display:flex; gap:6px; }
+.pz-qbtn { pointer-events:auto; cursor:pointer; font:inherit; font-weight:800; font-size:13px; color:var(--ink); text-transform:uppercase;
+  background:#fff; border:2.5px solid var(--ink); border-radius:10px; padding:6px 10px; }
+.pz-qbtn.on { background:var(--blue); color:#fff; }
+
 /* белая шторка респауна */
 #pzFade { position:absolute; inset:0; background:#fff4fb; opacity:0; pointer-events:none; z-index:8; transition:opacity .18s; }
 

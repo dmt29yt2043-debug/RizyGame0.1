@@ -77,5 +77,11 @@ export function createPost(renderer, scene, camera, { bloom = 0.55, samples = 4,
     setSize(w, h, dpr){ composer.setPixelRatio(dpr); composer.setSize(w, h); bloomPass.resolution.set(w / 2, h / 2); },
     flash(r, g, b, a){ vig.uniforms.uFlash.value.set(r, g, b, a); },
     render(dt){ composer.render(dt); },
+    // смена качества графики пересоздаёт пост-пайплайн — освобождаем render target'ы (rt самого composer'а
+    // и внутренние у bloom/bokeh, если есть), иначе они утекают при каждом переключении в настройках
+    dispose(){
+      composer.dispose();                                  // renderTarget1/2 (rt и его клон) + copyPass
+      for (const p of composer.passes) p.dispose && p.dispose();   // bloom/bokeh — свои render target'ы
+    },
   };
 }

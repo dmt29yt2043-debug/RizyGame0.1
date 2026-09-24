@@ -194,7 +194,7 @@ function floorTexture(w, d, cxU){
   return t;
 }
 
-export function createHeart(level, groundY, { glowTex, env, bloom = true }){
+export function createHeart(level, groundY, { glowTex, env, bloom = true, gemColor = 0xbfa8ff, gemEmissive = PAL.purple, heartColor = 0xffb3e0, heartEmissive = 0xff5fb8 }){
   const group = new THREE.Group(); group.name = "crystal-heart";
   const x = level.heart.x, ped = level.heart.pedestal;
   group.position.set(x, groundY, 0);
@@ -230,17 +230,17 @@ export function createHeart(level, groundY, { glowTex, env, bloom = true }){
   // гигантский кристалл: прозрачная лаванда, грани, сильные отражения
   const cy0 = 3.35;
   const gem = new THREE.Mesh(bigGemGeometry(0.92, 1.75, 1.2, 0.18, 8), new THREE.MeshPhysicalMaterial({
-    color: 0xbfa8ff, emissive: new THREE.Color(PAL.purple), emissiveIntensity: bloom ? 0.26 : 0.22,
+    color: gemColor, emissive: new THREE.Color(gemEmissive), emissiveIntensity: bloom ? 0.26 : 0.22,
     roughness: 0.05, metalness: 0.15, clearcoat: 1, clearcoatRoughness: 0.04,
     transparent: true, opacity: 0.66, flatShading: true, envMap: env || null, envMapIntensity: 1.8,
   }));
   gem.position.y = cy0;
   gem.renderOrder = 6;
   group.add(gem);
-  // сердце внутри кристалла — розовое, светится (виден сквозь грани)
+  // сердце внутри кристалла — розовое (ночью — лунно-голубое), светится (виден сквозь грани)
   const hgeo = new THREE.ExtrudeGeometry(heartShape(0.42), { depth: 0.16, bevelEnabled: true, bevelThickness: 0.08, bevelSize: 0.07, bevelSegments: 2, curveSegments: 8, steps: 1 });
   hgeo.center();
-  const heart = new THREE.Mesh(hgeo, new THREE.MeshStandardMaterial({ color: 0xffb3e0, emissive: new THREE.Color(0xff5fb8), emissiveIntensity: bloom ? 1.5 : 1.0, roughness: 0.3 }));
+  const heart = new THREE.Mesh(hgeo, new THREE.MeshStandardMaterial({ color: heartColor, emissive: new THREE.Color(heartEmissive), emissiveIntensity: bloom ? 1.5 : 1.0, roughness: 0.3 }));
   heart.position.y = cy0 + 0.1;
   group.add(heart);
 

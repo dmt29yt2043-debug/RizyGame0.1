@@ -21,11 +21,13 @@ export const STRATS = [
 const DT = PHYS.dt;
 const EMPTY = { solids: [], plats: [] };
 
-// один полёт: разбег на полной скорости, прыжок в t=0, прыжок зажат; tDj/tDash — моменты (с) или −1
-function fly(tDj, tDash, world = EMPTY, x0 = 0, y0 = 0, steer = null, maxT = 3){
+// один полёт: разбег на полной скорости, прыжок в t=0, прыжок зажат; tDj/tDash — моменты (с) или −1.
+// init(p, inp) — переопределить старт (по умолчанию — разбег и прыжок с земли); используется для отскока
+// с лианы (flyVine ниже), где старт — уже в воздухе с фиксированной скоростью отскока.
+function fly(tDj, tDash, world = EMPTY, x0 = 0, y0 = 0, steer = null, maxT = 3, init = null){
   const p = createPlayer(x0, y0);
-  p.vx = PHYS.maxRun; p.grounded = true;
-  const inp = { left: false, right: true, jump: true, jumpPressed: true, dashPressed: false };
+  const inp = { left: false, right: true, up: false, down: false, jump: true, jumpPressed: true, dashPressed: false };
+  if (init) init(p, inp); else { p.vx = PHYS.maxRun; p.grounded = true; }
   const pts = [{ x: p.x, y: p.y, vy: p.vy }];
   const ev = [];
   const n = Math.round(maxT / DT);
@@ -88,9 +90,44 @@ export function reach(sid, dy){
   return { x: best, tDj: arg ? arg.tDj : -1, tDash: arg ? arg.tDash : -1 };
 }
 
+// ---------- лианы (уровень 2): отскок с лианы — отдельная огибающая ----------
+// Старт — не разбег, а фиксированная скорость отскока от лианы (PHYS.climbHopX/Y, см. physics.js), плюс
+// (опционально) ещё двойной прыжок/рывок в воздухе — на лиане они восстанавливаются, так что комбо законно.
+function flyVine(side, tDj, tDash, world = EMPTY, x0 = 0, y0 = 0, steer = null, maxT = 3){
+  return fly(tDj, tDash, world, x0, y0, steer, maxT, (p, inp) => {
+    p.vx = side * PHYS.climbHopX; p.vy = PHYS.climbHopY;
+    p.grounded = false; p.canDouble = true; p.airDash = true; p.facing = side;
+    inp.left = side < 0; inp.right = side > 0;
+  });
+}
+let _venv = null;
+function vineEnvelopes(){
+  if (_venv) return _venv;
+  const tStep = 1 / 60, tMax = 1.1;
+  const times = []; for (let t = 0.05; t <= tMax; t += tStep) times.push(+t.toFixed(4));
+  const mk = side => {
+    const runs = [{ tDj: -1, tDash: -1 }];
+    for (const a of times) runs.push({ tDj: a, tDash: -1 });
+    for (const b of times) runs.push({ tDj: -1, tDash: b });
+    for (const a of times) for (let j = 0; j < times.length; j += 3) runs.push({ tDj: a, tDash: times[j] });
+    for (const r of runs) r.pts = flyVine(side, r.tDj, r.tDash).pts;
+    return { runs, maxH: Math.max(...runs.map(r => apexOf(r.pts))) };
+  };
+  _venv = { "-1": mk(-1), "1": mk(1) };
+  return _venv;
+}
+function reachVine(side, dy){
+  const E = vineEnvelopes()[side];
+  let best = -Infinity, arg = null;
+  for (const r of E.runs){ const x = reachOf(r.pts, dy); if (x > best){ best = x; arg = r; } }
+  return { x: best, tDj: arg ? arg.tDj : -1, tDash: arg ? arg.tDash : -1 };
+}
+
 // ---------- переходы пути ----------
-// level.path: [{ id, need }] — по порядку; need — самая сильная стратегия, доступная на этом участке.
-// Узлы — id твёрдых блоков, платформ или движущихся платформ (у движущихся берётся лучшее положение: игрок ждёт).
+// level.path: [{ id, need, via }] — по порядку; need — самая сильная стратегия, доступная на этом участке;
+// via:"vine" — переход НАЧИНАЕТСЯ отскоком с предыдущего узла (он обязан быть лианой), не разбегом.
+// Узлы — id твёрдых блоков, платформ, движущихся платформ (у движущихся — лучшее положение, игрок ждёт)
+// или лиан (level.vines) — top/lowTop/highTop лианы это высота хвата (низ зоны, v.y0); vineTop/side — для via.
 function nodeOf(level, id){
   const s = level.solids.find(r => r.id === id);
   if (s) return { id, x0: s.x0, x1: s.x1, top: s.y1, lowTop: s.y1, highTop: s.y1, kind: "solid" };
@@ -102,6 +139,8 @@ function nodeOf(level, id){
     return { id, x0: m.x0, x1: m.x1, top: m.y, lowTop: m.y - Math.abs(ay), highTop: m.y + Math.abs(ay),
       minX0: m.x0 - Math.abs(ax), maxX1: m.x1 + Math.abs(ax), kind: "mover", m };
   }
+  const v = (level.vines || []).find(r => r.id === id);
+  if (v) return { id, x0: v.x0, x1: v.x1, top: v.y0, lowTop: v.y0, highTop: v.y0, vineTop: v.y1, side: v.side, kind: "vine" };
   throw new Error("нет узла пути " + id);
 }
 
@@ -111,8 +150,33 @@ export function checkLevel(level, { ghost = true } = {}){
   let ok = true;
   const order = STRATS.map(s => s.id);
   for (let i = 1; i < level.path.length; i++){
-    const A = nodeOf(level, level.path[i - 1].id), B = nodeOf(level, level.path[i].id);
-    const need = level.path[i].need || "all";
+    const step = level.path[i];
+    const A = nodeOf(level, level.path[i - 1].id), B = nodeOf(level, step.id);
+    const need = step.need || "all";
+
+    // лиана → следующий узел: старт не разбегом, а отскоком с A (A обязана быть лианой) — отдельная
+    // огибающая (flyVine/vineEnvelopes выше), без «призрака» в реальной геометрии (см. ограничения).
+    if (step.via === "vine"){
+      if (A.kind !== "vine") throw new Error(`via:"vine" у перехода в ${B.id}, но ${A.id} не лиана`);
+      const side = A.side;
+      // отскок уходит в сторону side (от стены): «свой» край лианы — со стороны side, «свой» край B — с
+      // противоположной стороны (движение навстречу друг другу через разрыв)
+      const aEdge = side > 0 ? A.x1 : A.x0;
+      const bEdge = side > 0 ? (B.kind === "mover" ? B.minX0 : B.x0) : (B.kind === "mover" ? B.maxX1 : B.x1);
+      const bTop = B.kind === "mover" ? B.lowTop : B.top;
+      const gap = +(side > 0 ? bEdge - aEdge : aEdge - bEdge).toFixed(3);
+      const dy = +(bTop - A.vineTop).toFixed(3);
+      const R = gap > 0 ? reachVine(side, dy) : { x: Infinity };
+      const mx = gap > 0 ? R.x / gap - 1 : Infinity;
+      const H = vineEnvelopes()[side].maxH;
+      const my = dy > 0 ? H / dy - 1 : Infinity;
+      const pass = mx >= MARGIN && my >= MARGIN;
+      if (!pass) ok = false;
+      rows.push({ from: A.id + " (отскок)", to: B.id, gap, dy, need: "лиана→прыжок", kind: gap > 0 ? "разрыв" : "подъём",
+        reach: R.x, maxH: H, mx, my, pass, min: "", ghost: "—" });
+      continue;
+    }
+
     // движущиеся: лучшее положение (игрок ждёт подъезда)
     const ax1 = A.kind === "mover" ? A.maxX1 : A.x1;
     const bx0 = B.kind === "mover" ? B.minX0 : B.x0;
@@ -135,8 +199,9 @@ export function checkLevel(level, { ghost = true } = {}){
     // самая слабая стратегия, которой хватает (показывает, чему учит переход)
     for (const sid of order){ if (test(sid).pass){ row.min = sid; break; } }
     if (!row.min) row.min = "—";
-    // призрак в настоящей геометрии
-    if (ghost && t.pass) row.ghost = ghostRun(level, A, B, need, dy, gap);
+    // призрак в настоящей геометрии: лианы пропускаем — «приземление» там физически не «grounded» (хват
+    // в воздухе), запас по dy/gap уже проверен выше тем же кодом полёта, что и у обычных прыжков
+    if (ghost && t.pass && B.kind !== "vine" && A.kind !== "vine") row.ghost = ghostRun(level, A, B, need, dy, gap);
     if (!t.pass || row.ghost === "FAIL") ok = false;
     rows.push(row);
   }

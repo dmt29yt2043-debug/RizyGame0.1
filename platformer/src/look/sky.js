@@ -24,14 +24,45 @@ const loader = new THREE.TextureLoader();
 const _pending = [];
 export function bgReady(){ return Promise.all(_pending); }
 
-function loadBg(name){
+// dir — подпапка уровня относительно assets/bg/ ("" — уровень 1, "l2/" — уровень 2); onResult(ok) — если
+// картинки ещё нет (уровень 2 генерируется параллельно с этой работой), вызывающий делает плавный фолбэк.
+function loadBg(name, dir = "", onResult){
   let done;
   _pending.push(new Promise(res => { done = res; }));
-  const t = loader.load(BG + name, () => done(), undefined, err => { console.warn("[sky] не загрузилась", name, err); done(); });
+  const t = loader.load(BG + dir + name,
+    () => { done(); onResult && onResult(true); },
+    undefined,
+    err => { console.warn("[sky] не загрузилась", dir + name, err); done(); onResult && onResult(false); });
   t.colorSpace = THREE.SRGBColorSpace;
   t.anisotropy = 4;
   t.generateMipmaps = true;
   t.minFilter = THREE.LinearMipmapLinearFilter;
+  return t;
+}
+
+// ---------- процедурный фолбэк ночного неба: градиент + звёзды + луна (пока нет sky-night.png) ----------
+function nightSkyFallback(){
+  const W = 1024, H = 640, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  const grd = g.createLinearGradient(0, 0, 0, H);
+  grd.addColorStop(0, "#0c0f2e"); grd.addColorStop(0.55, "#241a3f"); grd.addColorStop(0.82, "#3a2a52"); grd.addColorStop(1, "#4a3860");
+  g.fillStyle = grd; g.fillRect(0, 0, W, H);
+  const rnd = makeRng(2026);
+  for (let i = 0; i < 420; i++){
+    const x = rnd() * W, y = rnd() * H * 0.72, r = rnd() * 1.3 + 0.2, a = 0.25 + rnd() * 0.65;
+    g.fillStyle = `rgba(255,255,255,${a.toFixed(2)})`;
+    g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+  }
+  // луна
+  const mx = W * 0.74, my = H * 0.22, mr = 46;
+  const mg = g.createRadialGradient(mx, my, 0, mx, my, mr * 2.6);
+  mg.addColorStop(0, "rgba(226,232,255,0.55)"); mg.addColorStop(1, "rgba(226,232,255,0)");
+  g.fillStyle = mg; g.beginPath(); g.arc(mx, my, mr * 2.6, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "#eef2ff"; g.beginPath(); g.arc(mx, my, mr, 0, Math.PI * 2); g.fill();
+  g.fillStyle = "rgba(180,190,225,0.35)";
+  for (const [dx, dy, r] of [[-12, -8, 9], [10, 6, 6], [-4, 14, 5]]){ g.beginPath(); g.arc(mx + dx, my + dy, r, 0, Math.PI * 2); g.fill(); }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
   return t;
 }
 // «cover»-размер плоскости (мировые ед.) на глубине depth (перед камерой), аспект картинки imgAspect,
@@ -42,10 +73,18 @@ function coverSize(depth, aspect, imgAspect, margin = 1.15){
   return { w: h * imgAspect, h };
 }
 
-// ---------- НЕБО: sky-city.png — ребёнок камеры, самая дальняя, движение ~0 (в духе «5% от камеры») ----------
-export function createSky(camera){
-  const tex = loadBg("sky-city.png");
-  const mat = new THREE.MeshBasicMaterial({ map: tex, fog: false, depthWrite: false, depthTest: false });
+// ---------- НЕБО: sky-city.png (или ночью sky-night.png) — ребёнок камеры, самая дальняя,
+// движение ~0 (в духе «5% от камеры»). dir — подпапка уровня; night — ночная гамма + фолбэк, пока
+// нет картинки (see nightSkyFallback выше). ----------
+export function createSky(camera, { dir = "", night = false } = {}){
+  const name = night ? "sky-night.png" : "sky-city.png";
+  const fallback = night ? nightSkyFallback() : null;
+  const mat = new THREE.MeshBasicMaterial({ map: fallback, fog: false, depthWrite: false, depthTest: false });
+  const tex = loadBg(name, dir, ok => {
+    if (ok){ mat.map = tex; mat.needsUpdate = true; if (fallback) fallback.dispose(); }
+    // !ok: картинки ещё нет — остаёмся на процедурном фолбэке (день без фолбэка — как раньше, просто пусто)
+  });
+  if (!night) mat.map = tex;
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
   mesh.name = "sky"; mesh.renderOrder = -100; mesh.frustumCulled = false;
   const DIST = 300, IMG_ASPECT = 1536 / 1024;
@@ -56,7 +95,10 @@ export function createSky(camera){
     mesh.scale.set(w, h, 1);
   };
   fit(camera.aspect);
-  return { mesh, fit, texture: tex };
+  return {
+    mesh, fit, texture: tex,
+    dispose(){ camera.remove(mesh); mesh.geometry.dispose(); mat.dispose(); if (fallback && mat.map !== fallback) fallback.dispose(); },
+  };
 }
 
 // ---------- ОКРУЖЕНИЕ ДЛЯ ОТРАЖЕНИЙ: закатная панорама → PMREM ----------
@@ -64,19 +106,28 @@ export function createSky(camera){
 // Верхняя полусфера — та же sky-city.png (зенит — розовые облака и купол, у горизонта — золотой город и
 // солнце), нижняя — сгущается от тёплого горизонта к тёмной сливе. Именно тёмный низ делает металл
 // металлом: золотой валик и хромовая чаша получают контраст «светлый блик — тёмный рефлекс», а не
-// заливаются ровным оранжевым. Нет картинки — вместо неё процедурный закатный градиент.
-export function createEnvironment(renderer, panorama){
+// заливаются ровным оранжевым. Нет картинки — вместо неё процедурный закатный градиент (ночью — холодный,
+// лунно-фиолетовый: см. pal.night в вызове из main.js).
+export function createEnvironment(renderer, panorama, { night = false } = {}){
   const hasPano = !!(panorama && panorama.image && panorama.image.width);
   const scene = new THREE.Scene();
   const geo = new THREE.SphereGeometry(1, 48, 24);
+  // ночной процедурный фолбэк: лунно-голубой зенит → сливовый горизонт, холодный «блик» вместо солнечного
+  const NP = night ? {
+    low: 0x2a2050, mid: 0x362a5c, top: 0x171331, sun: 0xcfe0ff, ground: 0x0e0a20, horizon: 0x3a2c55,
+    glint: 0xbcd4ff,
+  } : {
+    low: PAL.skyLow, mid: PAL.skyMid, top: PAL.skyTop, sun: PAL.sun, ground: 0x5d5878, horizon: 0xf6d2b8,
+    glint: 0xfff0d8,
+  };
   const mat = new THREE.ShaderMaterial({
     side: THREE.BackSide, fog: false, depthWrite: false,
     uniforms: {
       uPano: { value: hasPano ? panorama : null }, uHas: { value: hasPano ? 1 : 0 },
-      uLow: { value: new THREE.Color(PAL.skyLow) }, uMid: { value: new THREE.Color(PAL.skyMid) }, uTop: { value: new THREE.Color(PAL.skyTop) },
-      uSun: { value: new THREE.Color(PAL.sun) }, uSunDir: { value: new THREE.Vector3(0.6, 0.12, 0.5).normalize() },
-      uGround: { value: new THREE.Color(0x5d5878) }, uHorizon: { value: new THREE.Color(0xf6d2b8) },
-      uGlint: { value: new THREE.Vector3(0.16, 0.36, 0.92).normalize() }, uGlintC: { value: new THREE.Color(0xfff0d8).multiplyScalar(7) },
+      uLow: { value: new THREE.Color(NP.low) }, uMid: { value: new THREE.Color(NP.mid) }, uTop: { value: new THREE.Color(NP.top) },
+      uSun: { value: new THREE.Color(NP.sun) }, uSunDir: { value: new THREE.Vector3(night ? -0.5 : 0.6, 0.3, 0.5).normalize() },
+      uGround: { value: new THREE.Color(NP.ground) }, uHorizon: { value: new THREE.Color(NP.horizon) },
+      uGlint: { value: new THREE.Vector3(night ? -0.16 : 0.16, 0.36, 0.92).normalize() }, uGlintC: { value: new THREE.Color(NP.glint).multiplyScalar(night ? 3 : 7) },
     },
     vertexShader: `varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
     fragmentShader: `
@@ -145,20 +196,26 @@ function fadeMaterial(map, { fx = 0, fb = 0, ft = 0, opacity = 1, solid = 0 } = 
 const halfH = D => D * TAN;
 const centerY = (camY, D) => camY + CAM.height - D * (CAM.height - CAM.lookUp) / CAM.dist;
 
-export function createBackdrop(level){
+// dir — подпапка уровня ("" | "l2/"); night — ночные имена файлов (city-night-*, clouds-night, finale-night);
+// декоративные слои (город/облака), которых ещё нет на диске, просто прячутся (без «дыр»/белых прямоугольников)
+// до появления файла — перезагрузка уровня подхватит их сама (см. main.js: level switch пересобирает backdrop).
+export function createBackdrop(level, { dir = "", night = false } = {}){
   const group = new THREE.Group(); group.name = "backdrop";
   const IMG_ASPECT = 1536 / 1024;
   const levelMid = (level.minX + level.maxX) / 2;
   const REF_Y = 1.5;                         // типичная высота камеры (по ней раскладываем слои)
   const layers = [];
+  const disposers = [];
 
   // ---- город: 6 тайлов a/b/c с зеркалами, перекрытие = ширина растворения краёв ----
   {
     const D = 70, P = 0.3, PY = 0.85, FX = 0.17;
     const hh = halfH(D), h = 34, w = h * IMG_ASPECT;
     const yBot = centerY(REF_Y, D) - 0.86 * hh;                         // низ облачного подножия — под кадром
-    const texs = ["city-mid-a.png", "city-mid-b.png", "city-mid-c.png"].map(loadBg);
+    const names = night ? ["city-night-a.png", "city-night-b.png", "city-night-c.png"] : ["city-mid-a.png", "city-mid-b.png", "city-mid-c.png"];
+    const texs = names.map((n, i) => loadBg(n, dir, ok => { if (!ok) mats[i].opacity = 0; }));
     const mats = texs.map(t => fadeMaterial(t, { fx: FX, fb: 0.12, solid: 1 }));
+    disposers.push(() => { for (const t of texs) t.dispose(); for (const m of mats) m.dispose(); });
     // ход камеры по x → какой диапазон локальных x слоя вообще виден (с запасом на 21:9)
     const camMin = level.minX - 2, camMax = level.maxX + 2, halfW = hh * 2.4;
     const lo = camMin - halfW - (camMin - levelMid) * P, hi = camMax + halfW - (camMax - levelMid) * P;
@@ -186,31 +243,43 @@ export function createBackdrop(level){
     const camMin = level.minX - 2, camMax = level.maxX + 2, halfW = hh * 2.4;
     const lo = camMin - halfW - (camMin - levelMid) * P, hi = camMax + halfW - (camMax - levelMid) * P;
     const reps = Math.ceil((hi - lo) / w);
-    cloudsTex = loadBg("clouds.png");
-    cloudsTex.wrapS = THREE.MirroredRepeatWrapping; cloudsTex.wrapT = THREE.ClampToEdgeWrapping;
-    cloudsTex.repeat.set(reps, 1);
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w * reps, h), fadeMaterial(cloudsTex, { fb: 0.1, fx: 0.02, opacity: 0.88 }));
+    const cloudsMat = fadeMaterial(null, { fb: 0.1, fx: 0.02, opacity: 0.88 });
+    cloudsTex = loadBg(night ? "clouds-night.png" : "clouds.png", dir, ok => {
+      if (!ok){ cloudsMat.opacity = 0; return; }
+      cloudsTex.wrapS = THREE.MirroredRepeatWrapping; cloudsTex.wrapT = THREE.ClampToEdgeWrapping;
+      cloudsTex.repeat.set(reps, 1);
+      cloudsMat.map = cloudsTex; cloudsMat.needsUpdate = true;
+    });
+    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w * reps, h), cloudsMat);
     mesh.position.set((lo + hi) / 2, yBot + h / 2, CAM.dist - D);
     mesh.renderOrder = -40;
     const g = new THREE.Group(); g.name = "clouds"; g.add(mesh);
     group.add(g);
     layers.push({ g, P, PY });
+    disposers.push(() => { cloudsTex.dispose(); cloudsMat.dispose(); });
   }
 
-  // ---- зал у финиша: непрозрачный, неподвижный; левый край (≈4 ед.) мягко растворяется в город ----
+  // ---- зал у финиша: непрозрачный, неподвижный; левый край (≈4 ед.) мягко растворяется в город.
+  // Ночью — finale-night.png (интерьер лунной обсерватории); нет файла — процедурный ночной градиент. ----
   {
     const D = 26, w = 46, h = w / IMG_ASPECT;
-    const mat = new THREE.MeshBasicMaterial({ map: loadBg("hall.png"), transparent: true, depthWrite: false, fog: false });
+    const fallback = night ? nightSkyFallback() : null;
+    const mat = new THREE.MeshBasicMaterial({ map: fallback, transparent: true, depthWrite: false, fog: false });
     mat.onBeforeCompile = sh => {
       sh.fragmentShader = sh.fragmentShader.replace("#include <map_fragment>", `#include <map_fragment>
         diffuseColor.a *= smoothstep(0.0, 0.09, vMapUv.x) * smoothstep(0.0, 0.06, 1.0 - vMapUv.y);`);
     };
     mat.customProgramCacheKey = () => "bg-hall";
+    const hallTex = loadBg(night ? "finale-night.png" : "hall.png", dir, ok => {
+      if (ok){ mat.map = hallTex; mat.needsUpdate = true; if (fallback) fallback.dispose(); }
+    });
+    if (!night) mat.map = hallTex;
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
     mesh.position.set(level.heart.x - 3, centerY(3, D) + 1.2, CAM.dist - D);
     mesh.renderOrder = -30;
     mesh.name = "hall";
     group.add(mesh);
+    disposers.push(() => { hallTex.dispose(); mat.dispose(); if (fallback && mat.map !== fallback) fallback.dispose(); });
   }
 
   return {
@@ -223,6 +292,10 @@ export function createBackdrop(level){
         L.g.position.y = (cy - REF_Y) * L.PY;
       }
       cloudsTex.offset.x = (t * 0.004) % 2;
+    },
+    dispose(){
+      group.traverse(o => { if (o.isMesh) o.geometry.dispose(); });
+      for (const d of disposers) d();
     },
   };
 }

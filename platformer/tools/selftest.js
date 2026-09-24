@@ -1,7 +1,9 @@
 // Самопроверка геймплея в браузере (вставляется как --eval в headless-тестер раннера):
 //   cd game && node run/tools/cdp.mjs --page /platformer/ --query "shot=1&at=0.1" --eval "$(cat platformer/tools/selftest.js)"
 // Клавиатура — через dispatchEvent (e.code + e.key), всё остальное — через window.PLAT. Возвращает JSON с проверками.
-(() => {
+// Асинхронная IIFE (cdp.mjs делает Runtime.evaluate c awaitPromise) — переходы между уровнями теперь
+// асинхронные (loadLevel ждёт фоновых текстур), нужен настоящий await, а не только шаги физики P.step().
+(async () => {
   const P = window.PLAT, G = P.G, R = [];
   const ok = (name, cond, info) => R.push({ name, ok: !!cond, info });
   const key = (type, code, k) => window.dispatchEvent(new KeyboardEvent(type, { code, key: k, bubbles: true, cancelable: true }));
@@ -10,6 +12,19 @@
   const home = x => { P.teleport(x); P.step(0.05); };
   const until = (cond, sec) => { const n = Math.round(sec * 120); for (let i = 0; i < n && !cond(); i++) P.step(1 / 120); return cond(); };
   const maxY = (sec, pre) => { let m = -1e9; const n = Math.round(sec / (1 / 120)); for (let i = 0; i < n; i++){ if (pre) pre(i); P.step(1 / 120); m = Math.max(m, P.player.y); } return m; };
+  // реальное время (не шаг физики) — для ожидания асинхронной загрузки уровня (текстуры/задники)
+  const waitFor = async (cond, ms = 5000) => { const t0 = Date.now(); while (!cond() && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 20)); return cond(); };
+
+  // ---------- все уровни открыты сразу (UNLOCK_ALL в config.js — временно, до релиза замков) ----------
+  {
+    const prevMode = G.mode;
+    G.mode = "title"; P.hud.show("title");
+    document.querySelector('[data-cmd="levels"]').click();
+    const l2CardFresh = document.querySelector('.pz-lvl-card[data-arg="2"]');
+    ok("уровень 2 открыт сразу (UNLOCK_ALL), без прохождения уровня 1", !!l2CardFresh && !l2CardFresh.classList.contains("locked") && l2CardFresh.dataset.cmd === "selectlevel", { html: l2CardFresh && l2CardFresh.className });
+    tap("Escape", "Escape");
+    G.mode = prevMode; P.hud.show(null);
+  }
 
   // ---------- пауза ----------
   home(2);
@@ -193,12 +208,137 @@
   ok("касание Сердца — победа", G.won);
   P.step(2.0);
   ok("экран победы", G.mode === "win" && !document.getElementById("scrWin").hidden, { mode: G.mode });
+  // уровень 1 — есть уровень 2: кнопка «Следующий уровень» видна, ГЛАВНАЯ (синяя, не .alt) и выбрана по
+  // умолчанию (Enter уводит на неё), «Ещё раз» — вторичная (.alt) и ниже
+  const nextBtn = document.querySelector('#scrWin [data-cmd="nextlevel"]');
+  const againBtn = document.querySelector('#scrWin [data-cmd="again"]');
+  ok("экран победы: «Следующий уровень» видна и выбрана по умолчанию", nextBtn && !nextBtn.hidden && nextBtn.classList.contains("sel"));
+  ok("«Следующий уровень» — главная синяя кнопка (не .alt)", nextBtn && nextBtn.classList.contains("big") && !nextBtn.classList.contains("alt"));
+  ok("«Ещё раз» — вторичная кнопка (.alt), ниже «Следующего уровня»", againBtn && againBtn.classList.contains("alt") && nextBtn.compareDocumentPosition(againBtn) & Node.DOCUMENT_POSITION_FOLLOWING);
   P.step(0.8); tap("Enter", "Enter");
-  ok("«Ещё раз» — уровень с начала", G.mode === "play" && G.crystals === 0 && P.player.x < 1 && G.playT === 0);
+  const wentL2 = await waitFor(() => G.mode === "play" && /Ночн/.test(P.level.name));
+  ok("«Следующий уровень» с экрана победы переводит на уровень 2", wentL2, { name: P.level.name, mode: G.mode });
 
-  // ---------- проходимость ----------
+  // ---------- проходимость (текущий уровень — сейчас уровень 2, после «Следующего уровня» выше) ----------
   const rep = P.check();
-  ok("проверка проходимости в браузере", /ПРОХОДИМ/.test(rep) && !/НЕ ПРОХОДИМ/.test(rep));
+  ok("проверка проходимости в браузере (уровень 2)", /ПРОХОДИМ/.test(rep) && !/НЕ ПРОХОДИМ/.test(rep));
+  const repAll = P.checkAll();
+  ok("проверка проходимости в браузере (оба уровня)", !/НЕ ПРОХОДИМ/.test(repAll));
+
+  // ---------- лазание по лианам (уровень 2) ----------
+  const V1 = P.level.vines.find(v => v.id === "v1");
+  const vcx = (V1.x0 + V1.x1) / 2;
+
+  // хват в воздухе: влетает в зону лианы, не нажимая ↑
+  home(V1.x0 - 3); P.step(0.02);
+  P.player.x = P.player.px = vcx; P.player.y = P.player.py = V1.y0 + 2.2; P.player.vy = -2; P.player.grounded = false; P.player.climbing = false;
+  P.step(1 / 120);
+  ok("хват лианы в воздухе (без ↑)", P.player.climbing === true, { y: +P.player.y.toFixed(2) });
+
+  // подъём по ↑ (~3.5 ед/с)
+  let vy0 = P.player.y;
+  key("keydown", "ArrowUp", "ArrowUp"); P.step(0.5); key("keyup", "ArrowUp", "ArrowUp"); P.step(0.03);
+  const climbUpDy = P.player.y - vy0;
+  ok("подъём по лиане: ↑ ≈3.5 ед/с", P.player.climbing && climbUpDy > 1.5 && climbUpDy < 1.95, { dy: +climbUpDy.toFixed(2) });
+
+  // спуск по ↓
+  vy0 = P.player.y;
+  key("keydown", "ArrowDown", "ArrowDown"); P.step(0.4); key("keyup", "ArrowDown", "ArrowDown"); P.step(0.03);
+  const climbDownDy = P.player.y - vy0;
+  ok("спуск по лиане: ↓", P.player.climbing && climbDownDy < -1.2 && climbDownDy > -1.6, { dy: +climbDownDy.toFixed(2) });
+
+  // висит без ввода — без скольжения
+  vy0 = P.player.y; P.step(0.3);
+  ok("висит без ввода — не скользит", P.player.climbing && Math.abs(P.player.y - vy0) < 0.01, { dy: +(P.player.y - vy0).toFixed(3) });
+
+  // на лиане восстановлены двойной прыжок и рывок
+  ok("на лиане восстановлены двойной прыжок и рывок", P.player.canDouble === true && P.player.airDash === true);
+
+  // прыжок от лианы: отскок вверх-в сторону (от стены), гасит саму лиану
+  const hopX0 = P.player.x, hopY0 = P.player.y;
+  key("keydown", "Space", " "); P.step(0.04); key("keyup", "Space", " ");
+  ok("прыжок от лианы — отскок вверх-в сторону", !P.player.climbing && P.player.vy > 3 && Math.abs(P.player.x - hopX0) > 0.05, { vy: +P.player.vy.toFixed(2), dx: +(P.player.x - hopX0).toFixed(2) });
+  P.step(1.0);
+
+  // хват стоя у подножья лианы — только по ↑ (не просто прижавшись без ввода). У основания v1 нет
+  // настоящей площадки (лиана растёт из разрыва) — «grounded» тут условность на один кадр теста, поэтому
+  // проверяем ровно один физический шаг (иначе героиня успевает физически «упасть» с искусственной опоры,
+  // и это уже совсем другая, законная ветка — хват в воздухе, не эта проверка).
+  home(V1.x0 - 3); P.step(0.02);
+  P.player.x = P.player.px = vcx; P.player.y = P.player.py = V1.y0 + 0.05; P.player.vy = 0; P.player.grounded = true; P.player.ground = null; P.player.climbing = false;
+  P.step(1 / 120);
+  ok("на земле у лианы без ↑ не хватается", !P.player.climbing);
+  P.player.x = P.player.px = vcx; P.player.y = P.player.py = V1.y0 + 0.05; P.player.vy = 0; P.player.grounded = true; P.player.ground = null; P.player.climbing = false;
+  key("keydown", "ArrowUp", "ArrowUp"); P.step(0.06); key("keyup", "ArrowUp", "ArrowUp");
+  ok("хват лианы по ↑ стоя у подножья", P.player.climbing === true);
+
+  // отпускание ←/→ от стены (у v1 side=1 — «от стены» это вправо)
+  key("keydown", "KeyD", "d"); P.step(0.08); key("keyup", "KeyD", "d");
+  ok("→ (от стены) отпускает лиану", !P.player.climbing);
+  P.step(0.6);
+
+  // рывок прямо с лианы
+  home(V1.x0 - 3); P.step(0.02);
+  P.player.x = P.player.px = vcx; P.player.y = P.player.py = V1.y0 + 1.6; P.player.vy = -1; P.player.grounded = false; P.player.climbing = false; P.player.dashCD = 0;
+  P.step(1 / 120);
+  ok("хват для проверки рывка", P.player.climbing === true);
+  key("keydown", "ShiftLeft", "Shift"); P.step(0.05); key("keyup", "ShiftLeft", "Shift");
+  ok("рывок прямо с лианы", !P.player.climbing && P.player.dashT > 0);
+  P.step(1.0);
+
+  // ---------- «Ещё раз» на уровне без следующего (уровень 2) ----------
+  home(P.level.heart.x); G.hearts = 3;
+  key("keydown", "KeyD", "d"); until(() => G.won, 2); key("keyup", "KeyD", "d");
+  ok("касание лунного кристалла — победа на уровне 2", G.won);
+  P.step(2.0);
+  const noNextBtn = document.querySelector('#scrWin [data-cmd="nextlevel"]');
+  ok("на уровне 2 (последнем) кнопка «Следующий уровень» скрыта", !noNextBtn || noNextBtn.hidden);
+  P.step(0.8); tap("Enter", "Enter");
+  ok("«Ещё раз» на уровне 2 — сам уровень с начала", G.mode === "play" && /Ночн/.test(P.level.name) && G.crystals === 0 && G.playT === 0);
+
+  // ---------- меню: титул → «Уровни» → карточка уровня, Esc — назад ----------
+  P.unlock(2);                                                  // прогресс сохраняется отдельно от фоторежима — см. save.js; тут отпираем явно для теста экрана
+  G.mode = "title"; P.hud.show("title");
+  ok("возврат на титул для проверки меню", P.hud.screen === "title");
+  document.querySelector('[data-cmd="levels"]').click();
+  ok("кнопка «Уровни» открывает экран уровней", P.hud.screen === "levels");
+  const l2Card = document.querySelector('.pz-lvl-card[data-arg="2"]');
+  ok("карточка уровня 2 не заблокирована (после победы выше)", !!l2Card && !l2Card.classList.contains("locked"));
+  tap("Escape", "Escape");
+  ok("Esc из «Уровни» — назад на титул", P.hud.screen === "title");
+  document.querySelector('[data-cmd="levels"]').click();
+  document.querySelector('.pz-lvl-card[data-arg="2"]').click();
+  const wentL2ViaMenu = await waitFor(() => G.mode === "play" && /Ночн/.test(P.level.name));
+  ok("переход на уровень 2 через «Уровни» (карточка)", wentL2ViaMenu, { name: P.level.name });
+
+  // ---------- «Играть» продолжает с последнего уровня (не всегда с уровня 1) ----------
+  ok("прогресс запомнил уровень 2 как последний", P.progress.lastLevel === 2, { lastLevel: P.progress.lastLevel });
+  G.mode = "title"; P.hud.show("title");
+  document.querySelector('[data-cmd="play"]').click();
+  const resumedL2 = await waitFor(() => G.mode === "play" && /Ночн/.test(P.level.name));
+  ok("«Играть» с титула продолжает с уровня 2 (последнего, на котором была)", resumedL2, { name: P.level.name });
+
+  // ---------- настройки: экран открывается, качество переключается ----------
+  G.mode = "title"; P.hud.show("title");
+  document.querySelector('[data-cmd="settings"]').click();
+  ok("кнопка «Настройки» открывает экран настроек", P.hud.screen === "settings");
+  const q0 = P.quality;
+  document.querySelector('.pz-qbtn[data-q="low"]').click();
+  ok("выбор качества «low» применяется", P.quality === "low", { q: P.quality });
+  document.querySelector(`.pz-qbtn[data-q="${q0}"]`).click();
+  tap("Escape", "Escape");
+  ok("Esc из «Настройки» — назад на титул", P.hud.screen === "title");
+  P.goLevel(2);
+  await waitFor(() => G.mode === "play");
+
+  // ---------- сохранение прогресса (localStorage) ----------
+  P.saveBest(2, { time: 42.5, crystals: 10, stars: 1 });
+  let savedOk = false, savedRaw = null;
+  try {
+    savedRaw = JSON.parse(localStorage.getItem("rizy-plat-progress-v1"));
+    savedOk = !!savedRaw && savedRaw.unlocked.includes(2) && savedRaw.best["2"] && savedRaw.best["2"].crystals === 10;
+  } catch (e){}
+  ok("прогресс сохраняется в localStorage (открытые уровни + лучший результат)", savedOk, savedRaw);
 
   const fails = R.filter(r => !r.ok);
   return JSON.stringify({ passed: R.length - fails.length, total: R.length, fails, all: R.map(r => (r.ok ? "OK  " : "FAIL") + " " + r.name + (r.info ? " " + JSON.stringify(r.info) : "")) }, null, 1);
