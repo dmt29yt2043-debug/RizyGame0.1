@@ -2,14 +2,15 @@
 // (кристаллы, Гасители, факелы, сердечки, победа), камера, звук и «сок», фоторежим, window.PLAT.
 // Физика — src/physics.js, уровень — src/level.js, проверка проходимости — src/check.js (+ tools/check.mjs).
 import * as THREE from "three";
-import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
-import { PHYS, GAME, CAM, QUALITY } from "./config.js";
+import { installNeutralToneMapping } from "../../run/src/look/tonemap.js";
+import { PHYS, GAME, CAM, QUALITY, PAL } from "./config.js";
 import { LEVEL, buildWorld, setMovers, enemyPos } from "./level.js";
 import { createPlayer, stepPlayer, groundAt } from "./physics.js";
 import { checkLevel, formatReport } from "./check.js";
 import { createRizy } from "./rizy.js";
-import { createSky, createBackdrop } from "./look/sky.js";
+import { createSky, createBackdrop, createEnvironment, bgReady } from "./look/sky.js";
 import { buildWalls, placeMovers } from "./look/walls.js";
+import { createFlowers } from "./look/flowers.js";
 import { createCrystals, createHeart } from "./look/crystals.js";
 import { createEnemies, ENEMY_R } from "./look/enemies.js";
 import { createTorches, createSigns, createBlobs } from "./look/props.js";
@@ -41,7 +42,7 @@ const DPR = Math.min(devicePixelRatio || 1, QC.dprMax);
 renderer.setPixelRatio(DPR);
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.NoToneMapping;       // пастель как задумано; яркое сверх 1 уходит в bloom
+installNeutralToneMapping(renderer);              // нейтральная кривая — лайм и синий не уводит в жёлтый/фиолетовый
 renderer.info.autoReset = false;
 renderer.shadowMap.enabled = !!QC.shadows;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -52,21 +53,19 @@ const camera = new THREE.PerspectiveCamera(CAM.fov, innerWidth / innerHeight, 0.
 scene.add(camera);
 
 // ---------- СВЕТ ----------
-const hemi = new THREE.HemisphereLight(0xfff2f2, 0xcdb7e6, 1.95);
+// тёплый закатный ключевой свет справа-сверху (почти белый персик — сливки остаются сливками, не розовеют)
+// + лавандовое небо / тёплый золотистый отскок снизу; основной «цвет заката» на металле даёт IBL-окружение
+const hemi = new THREE.HemisphereLight(PAL.hemiSky, PAL.hemiGround, 0.95);
 scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xfff0dc, 1.75);
+const sun = new THREE.DirectionalLight(PAL.keyLight, 2.1);
 sun.position.set(7, 11, 9);
 scene.add(sun, sun.target);
 if (QC.shadows){
   sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);
+  sun.shadow.mapSize.set(QNAME === "high" ? 1024 : 768, QNAME === "high" ? 1024 : 768);
   const sc = sun.shadow.camera; sc.left = -9; sc.right = 9; sc.top = 9; sc.bottom = -9; sc.near = 1; sc.far = 40;
   sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.02;
 }
-// окружение для бликов на кристаллах (только их материалам)
-const pmrem = new THREE.PMREMGenerator(renderer);
-const envTex = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
-pmrem.dispose();
 
 // ---------- МИР ----------
 const world = buildWorld(LEVEL);
@@ -76,9 +75,16 @@ const bloomOn = QC.post && QC.bloom > 0;
 const sky = createSky(camera);
 const backdrop = createBackdrop(LEVEL);
 scene.add(backdrop.group);
+await bgReady();          // дождаться PNG-слоёв задника перед первым кадром (важно для фоторежима)
+// окружение для PBR-отражений (золото, хром, кристаллы): закатная панорама sky-city.png через PMREM
+// (если картинка не загрузилась — процедурный закатный градиент)
+const envTex = createEnvironment(renderer, sky.texture);
+scene.environment = envTex;
 const walls = buildWalls(LEVEL, renderer);
 scene.add(walls.group);
 if (QC.shadows) walls.group.traverse(o => { if (o.isMesh) o.receiveShadow = true; });
+const flowers = createFlowers(LEVEL, { density: QNAME === "low" ? 0.6 : 1 });
+scene.add(flowers.group);
 
 const torchGround = LEVEL.torches.map(t => groundAt(world, t.x));
 const signGround = LEVEL.signs.map(s => groundAt(world, s.x));
@@ -107,7 +113,7 @@ scene.add(rizy.root);
 if (QC.shadows) rizy.root.traverse(o => { if (o.isMesh) o.castShadow = true; });
 
 // ---------- ПОСТ ----------
-const post = QC.post ? createPost(renderer, scene, camera, { bloom: QC.bloom, samples: 4 }) : null;
+const post = QC.post ? createPost(renderer, scene, camera, { bloom: QC.bloom, samples: 4, dof: !!QC.dof }) : null;
 
 // ---------- СОСТОЯНИЕ ----------
 const G = {
@@ -459,7 +465,6 @@ function updateVisuals(dt, alpha){
   torches.update(G.time);
   for (let i = 0; i < LEVEL.enemies.length; i++){ const e = enemyPos(LEVEL.enemies[i], G.time); enemyPosBuf[i].x = e.x; enemyPosBuf[i].y = e.y; enemyPosBuf[i].dir = e.dir; }
   enemies.update(G.time, enemyPosBuf);
-  backdrop.update(G.time);
 
   // тени-пятна
   if (!QC.shadows && rizy.root.visible !== false){
@@ -493,6 +498,7 @@ function updateVisuals(dt, alpha){
   }
   fx.update(dt, camera, renderer.domElement.height);
   updateCamera(dt, px, py);
+  backdrop.update(G.time, cam.x, cam.y);
 
   // вспышка и шторка
   G.flash = Math.max(0, G.flash - dt * 1.8);

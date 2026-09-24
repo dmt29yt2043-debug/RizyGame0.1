@@ -74,47 +74,48 @@ export const CAM = {
   deadDown: 1.2,
 };
 
-// low — без поста (MSAA канваса, свечение — аддитивные ореолы); med — bloom + MSAA в HDR-цели;
-// high — плюс карта теней от солнца (область вокруг кадра) и больше частиц
+// low — без поста (MSAA канваса, свечение — аддитивные ореолы); med/high — bloom + MSAA в HDR-цели
+// и мягкие тени от солнца (карта теней ограничена областью вокруг камеры, см. main.js); high — ещё
+// и лёгкая глубина резкости (BokehPass).
 export const QUALITY = {
-  low:  { dprMax: 1.25, post: false, bloom: 0,    shadows: false, halos: 1.0, particles: 260 },
-  med:  { dprMax: 1.5,  post: true,  bloom: 0.55, shadows: false, halos: 0.6, particles: 420 },
-  high: { dprMax: 2,    post: true,  bloom: 0.62, shadows: true,  halos: 0.6, particles: 600 },
+  low:  { dprMax: 1.25, post: false, bloom: 0,    shadows: false, dof: false, halos: 1.0, particles: 260 },
+  med:  { dprMax: 1.5,  post: true,  bloom: 0.55, shadows: true,  dof: false, halos: 0.6, particles: 420 },
+  high: { dprMax: 2,    post: true,  bloom: 0.62, shadows: true,  dof: true,  halos: 0.6, particles: 600 },
 };
 
-// палитра (sRGB). Пастельная Идеалити в духе референса: персиковое небо, лавандовые силуэты, кремовый кирпич.
+// палитра (sRGB). «Идеалити»: сливки, золото и хром на закатном небе — персик → розовый → лаванда;
+// лайм только у наград (звёзды, флажки-чекпоинты), синий/фиолетовый — кристаллы и Гасители.
 export const PAL = {
-  skyTop:    0xbd93c6,
-  skyMid:    0xe2a9c2,
-  skyLow:    0xf6cbb4,
+  // небо на закате
+  skyLow:    0xffc9a8,  // персик у горизонта
+  skyMid:    0xf2b6d4,  // розовый
+  skyTop:    0xb9a7f0,  // лаванда в зените
   sun:       0xfff4c9,
-  sunHalo:   0xffe7b8,
-  cityFar:   0xdcbdd8,
-  cityMid:   0xc9afda,
-  cityNear:  0xb6a3d8,
-  winFar:    0xe8cfe2,
-  winMid:    0xe2d3ee,
-  winNear:   0xf1e8f8,
-  winLit:    0xfff1c4,
-  hillFar:   0xe7c2d7,
-  hillNear:  0xd7b9dd,
-  brick:     0xf7e8dc,
-  mortar:    0xe2cbc3,
-  band:      0xf1e0e1,
-  inset:     0x8e7abd,
-  trim:      0xfff8ef,
-  gold:      0xe5c07f,
-  top:       0xfbefe5,
-  lav:       0xb9a6dc,
-  lavDeep:   0x7d6bb0,
-  mint:      0xa8ecd6,
+  sunHalo:   0xffe0b0,
+  keyLight:  0xffe6c8,  // закатный ключевой свет справа-сверху — тёплый, но почти белый (сливки не розовеют)
+  hemiSky:   0xd2c8f4,  // лавандовое небо (заполняющий свет сверху)
+  hemiGround:0xf2d9b4,  // тёплый золотистый отскок снизу
+
+  // материалы мира: сливки/золото/хром (PBR — см. walls.js)
+  cream:     0xf4ebdd,
+  gold:      0xd9a93a,
+  chrome:    0xe8ecf2,
+  top:       0xf8f1e6,  // столешница — чуть светлее сливок
+  trim:      0xfff8ef,  // белая подсветка кромок
+
   ink:       0x070D36,
-  blue:      0x0536D4,
-  lime:      0xC0FF3F,
+  blue:      0x2F52E8,
+  purple:    0x7B4FD9,
+  lime:      0xC6EE3A,  // награды: звёзды, флажки-чекпоинты, вспышки побед
+
   crystalA:  0x3fe6d4,  // бирюзовый
-  crystalB:  0x5cb6ff,  // голубой
-  crystalC:  0xff86cf,  // розовый
-  star:      0xd8ff4a,
-  gasBody:   0x4a3f66,  // войлок Гасителя (под текстурой волокон темнеет)
+  crystalB:  0x2F52E8,  // синий
+  crystalC:  0x7B4FD9,  // фиолетовый
+  star:      0xC6EE3A,  // лаймовый — звёздные кристаллы
+
+  gasBody:   0x3c3160,  // тёмно-фиолетовый войлок Гасителя
   gasEye:    0xff2d3f,
+
+  lav:       0xb9a6dc,  // мелкие лавандовые акценты (тени, дальний тон)
+  lavDeep:   0x6a58a0,  // тот же акцент, темнее — для тонировки дальнего плана
 };

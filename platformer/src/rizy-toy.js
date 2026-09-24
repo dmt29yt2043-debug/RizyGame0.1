@@ -22,7 +22,7 @@ const qE = (x, y, z) => new THREE.Quaternion().setFromEuler(new THREE.Euler(x, y
 const qTo = dir => new THREE.Quaternion().setFromUnitVectors(V3(0, 0, 1), dir.clone().normalize());
 function clean(g){
   if (g.index) g = g.toNonIndexed();
-  for (const k of Object.keys(g.attributes)) if (k !== "position" && k !== "normal" && k !== "uv") g.deleteAttribute(k);
+  for (const k of Object.keys(g.attributes)) if (k !== "position" && k !== "normal" && k !== "uv" && k !== "color") g.deleteAttribute(k);
   if (!g.attributes.uv) g.setAttribute("uv", new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
   if (!g.attributes.normal) g.computeVertexNormals();
   return g;
@@ -57,53 +57,192 @@ function taperTube(pts, r0, r1, radial = 10, seg = 24){
 const sph = (r, w = 24, h = 16) => new THREE.SphereGeometry(r, w, h);
 const rbox = (w, h, d, r = 0.03, s = 3) => new RoundedBoxGeometry(w, h, d, s, Math.min(r, w / 2 - 1e-3, h / 2 - 1e-3, d / 2 - 1e-3));
 
+// войлочный/пряжевый ворс: шум альбедо + зерно нормали по позиции вершины в бинд-позе (без UV — не съезжает
+// при слиянии геометрии в один меш). Адаптировано из game/run/src/actors/rizy/fibre.js под этот файл.
+function patchFibre(mat, o = {}){
+  const freq = o.freq || 90, amp = o.amp != null ? o.amp : 0.1, nrm = o.nrm != null ? o.nrm : 0.1;
+  const prev = mat.onBeforeCompile, prevKey = mat.customProgramCacheKey;
+  mat.onBeforeCompile = function (sh, r){
+    if (prev) prev.call(this, sh, r);
+    sh.vertexShader = sh.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec3 vRzP;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvRzP = position;");
+    sh.fragmentShader = sh.fragmentShader
+      .replace("#include <common>", `#include <common>
+varying vec3 vRzP;
+float rzHash(vec3 p){ p = fract(p * 0.3183099 + vec3(0.1, 0.2, 0.3)); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+float rzNoise(vec3 x){ vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(rzHash(i), rzHash(i + vec3(1,0,0)), f.x), mix(rzHash(i + vec3(0,1,0)), rzHash(i + vec3(1,1,0)), f.x), f.y),
+             mix(mix(rzHash(i + vec3(0,0,1)), rzHash(i + vec3(1,0,1)), f.x), mix(rzHash(i + vec3(0,1,1)), rzHash(i + vec3(1,1,1)), f.x), f.y), f.z); }`)
+      .replace("#include <color_fragment>", `#include <color_fragment>
+{ vec3 q = vRzP * ${freq.toFixed(1)}; float f = 0.6 * rzNoise(q) + 0.4 * rzNoise(q * 2.9 + 7.3);
+  diffuseColor.rgb *= 1.0 + ${amp.toFixed(3)} * (f - 0.5) * 2.0; }`)
+      .replace("#include <normal_fragment_maps>", `#include <normal_fragment_maps>
+{ vec3 q = vRzP * ${(freq * 1.7).toFixed(1)};
+  normal = normalize(normal + ${nrm.toFixed(3)} * (vec3(rzNoise(q + 3.1), rzNoise(q + 41.7), rzNoise(q + 19.3)) - 0.5)); }`);
+  };
+  mat.customProgramCacheKey = function (){ return (prevKey ? prevKey.call(this) : "") + "|rizyFibre" + freq + "/" + amp + "/" + nrm; };
+  mat.needsUpdate = true;
+  return mat;
+}
+
 // точка на голове: az — вокруг оси Y (0 = вперёд, +Z), el — вверх; r — радиус
 const HEAD_R = 0.3;
 function onHead(az, el, r = HEAD_R){ return V3(Math.sin(az) * Math.cos(el) * r, Math.sin(el) * r, Math.cos(az) * Math.cos(el) * r); }
 
-// ---------- текстуры ----------
+// ---------- текстуры (процедурные canvas, строятся один раз на экземпляр; 96–256 px, RepeatWrapping) ----------
+// детерминированный ГПСЧ (как в game/run/src/actors/rizy/textures.js) — картинка одинакова между кадрами теста
+function rng(seed){
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function cvs(w, h){ const c = document.createElement("canvas"); c.width = w; c.height = h; return c; }
+function toTex(c, srgb){ const t = new THREE.CanvasTexture(c); if (srgb) t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 4; return t; }
+
+// вязка свитера под bump: петли «галочкой» + шахматный сдвиг через ряд (резинка/платочная фактура + «шахматка петель»)
 function knitTex(){
-  const c = document.createElement("canvas"); c.width = 64; c.height = 64;
-  const g = c.getContext("2d");
-  g.fillStyle = "#808080"; g.fillRect(0, 0, 64, 64);
-  for (let x = 0; x < 64; x += 8){                       // резинка: вертикальные валики «ёлочкой»
-    const grd = g.createLinearGradient(x, 0, x + 8, 0);
-    grd.addColorStop(0, "#5a5a5a"); grd.addColorStop(0.5, "#c8c8c8"); grd.addColorStop(1, "#5a5a5a");
-    g.fillStyle = grd; g.fillRect(x, 0, 8, 64);
+  const W = 256, H = 128, c = cvs(W, H), g = c.getContext("2d");
+  g.fillStyle = "#141420"; g.fillRect(0, 0, W, H);
+  const cw = W / 10, ch = H / 7;
+  for (let row = 0, y = 0; y < H; y += ch, row++){
+    const off = (row % 2) * cw * 0.5;
+    for (let x = -cw; x < W + cw; x += cw){
+      const cx = x + off;
+      for (const s of [-1, 1]){
+        g.fillStyle = s < 0 ? "rgba(255,255,255,0.17)" : "rgba(0,0,0,0.4)";
+        g.beginPath(); g.ellipse(cx + cw * (0.5 + 0.24 * s), y + ch * 0.5, cw * 0.27, ch * 0.56, -0.6 * s, 0, TAU); g.fill();
+      }
+    }
+    g.fillStyle = "rgba(0,0,0,0.22)"; g.fillRect(0, y, W, 1.4);
   }
-  for (let y = 0; y < 64; y += 8){ g.fillStyle = "rgba(0,0,0,.18)"; g.fillRect(0, y, 64, 1.5); }
-  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = 4;
-  return t;
+  return toTex(c, false);
+}
+// резинка манжет/ворота/низа свитера — чёткие вертикальные рубчики
+function ribTex(){
+  const W = 128, H = 48, c = cvs(W, H), g = c.getContext("2d");
+  g.fillStyle = "#0e0d13"; g.fillRect(0, 0, W, H);
+  const p = W / 8;
+  for (let x = 0; x < W; x += p){
+    g.fillStyle = "rgba(255,255,255,0.24)"; g.fillRect(x + p * 0.08, 0, p * 0.36, H);
+    g.fillStyle = "rgba(0,0,0,0.48)"; g.fillRect(x + p * 0.58, 0, p * 0.32, H);
+  }
+  return toTex(c, false);
+}
+// деним джинсов: базовый синий цвет запечён прямо в текстуру (материал белый — иначе умножение на тёмный
+// COL.jeans гасит светлую строчку). Диагональная саржа + мелкий крап + светлый шов по фиксированному U.
+function denimTex(){
+  const W = 256, H = 256, c = cvs(W, H), g = c.getContext("2d"), R = rng(31);
+  g.fillStyle = "#" + new THREE.Color(COL.jeans).getHexString(); g.fillRect(0, 0, W, H);
+  g.save(); g.lineWidth = 1.6;
+  for (let d0 = -H - 5; d0 < W + 5; d0 += 4.2){
+    g.strokeStyle = "rgba(255,255,255,0.16)"; g.beginPath(); g.moveTo(d0, 0); g.lineTo(d0 + H, H); g.stroke();
+    g.strokeStyle = "rgba(0,0,20,0.28)"; g.beginPath(); g.moveTo(d0 + 2.1, 0); g.lineTo(d0 + 2.1 + H, H); g.stroke();
+  }
+  for (let i = 0; i < 3200; i++){
+    g.fillStyle = R() < 0.5 ? "rgba(255,255,255,0.14)" : "rgba(0,0,25,0.2)";
+    g.fillRect(R() * W, R() * H, 2, 1.2);
+  }
+  g.restore();
+  const sx = W * 0.06;                                    // светлая двойная строчка — как настрочный шов
+  g.strokeStyle = "#fff4d2"; g.lineWidth = 2.4; g.setLineDash([5, 4]);
+  g.beginPath(); g.moveTo(sx, 0); g.lineTo(sx, H); g.stroke();
+  g.strokeStyle = "rgba(255,244,210,0.65)"; g.lineWidth = 1.4; g.lineDashOffset = 2;
+  g.beginPath(); g.moveTo(sx + 5, 0); g.lineTo(sx + 5, H); g.stroke();
+  g.setLineDash([]);
+  return toTex(c, true);
+}
+// светлая пунктирная строчка по кольцу подгиба джинсов (торус-хем на щиколотке)
+function stitchTex(){
+  const W = 128, H = 16, c = cvs(W, H), g = c.getContext("2d");
+  g.fillStyle = "#3a63f0"; g.fillRect(0, 0, W, H);
+  g.strokeStyle = "rgba(255,241,205,0.9)"; g.lineWidth = 3; g.setLineDash([7, 6]);
+  g.beginPath(); g.moveTo(0, H / 2); g.lineTo(W, H / 2); g.stroke();
+  return toTex(c, true);
+}
+// тканевый верх кед — базовый цвет запечён в текстуру (та же причина, что и у денима); мелкое плетение
+function shoeFabricTex(){
+  const W = 128, H = 128, c = cvs(W, H), g = c.getContext("2d");
+  g.fillStyle = "#" + new THREE.Color(COL.shoe).getHexString(); g.fillRect(0, 0, W, H);
+  const p = 6;
+  for (let y = 0; y < H; y += p) for (let x = 0; x < W; x += p){
+    const woven = ((x / p + y / p) % 2) === 0;
+    g.fillStyle = woven ? "rgba(255,255,255,0.16)" : "rgba(0,0,0,0.4)";
+    g.fillRect(x, y, p, p);
+  }
+  return toTex(c, true);
+}
+// витки пряжи: 2–3 нити скручены по спирали вдоль uv.y (длина трубки прядей/шнурков) — bump
+function yarnTwistTex(){
+  const W = 96, H = 96, c = cvs(W, H), g = c.getContext("2d"), img = g.createImageData(W, H), d = img.data, N = 3;
+  for (let y = 0; y < H; y++){
+    const v = y / H;
+    for (let x = 0; x < W; x++){
+      const u = x / W;
+      const tw = (u + v * 1.6) * N, f = tw - Math.floor(tw);       // сдвиг по v — иллюзия косой скрутки нитей
+      const s = Math.pow(Math.sin(PI * f), 0.7);
+      const val = Math.max(0, Math.min(255, 55 + 190 * s));
+      const o = (y * W + x) * 4; d[o] = d[o + 1] = d[o + 2] = val; d[o + 3] = 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  return toTex(c, false);
 }
 
 export function createRizyToy(opts = {}){
   const Q = opts.quality === "low" ? 0 : opts.quality === "high" ? 2 : 1;
   const S = (lo, med, hi) => [lo, med, hi][Q];
+  const LOW = Q === 0;
 
   // ---------- материалы ----------
-  const knit = knitTex(); knit.repeat.set(26, 5);
+  const knit = knitTex(); knit.repeat.set(13, 4);
+  const rib = ribTex(); rib.repeat.set(10, 1);
+  const denim = denimTex(); denim.repeat.set(1, 3);
+  const stitch = stitchTex(); stitch.repeat.set(22, 1);
+  const shoeFab = shoeFabricTex(); shoeFab.repeat.set(3, 2);
+  const yarnHair = yarnTwistTex(); yarnHair.repeat.set(1, 6);
+  const yarnLace = yarnHair.clone(); yarnLace.repeat.set(1, 3); yarnLace.needsUpdate = true;
   const mats = {
-    skin: new THREE.MeshPhysicalMaterial({ color: COL.skin, roughness: 0.52, sheen: 0.35, sheenRoughness: 0.6, sheenColor: new THREE.Color(0x9cc2ff), clearcoat: 0.12, clearcoatRoughness: 0.5 }),
+    // войлок кожи: матовый (без клиркоута), sheen светло-голубой даёт ворсистый ободок по силуэту на просвет
+    skin: new THREE.MeshPhysicalMaterial({ color: COL.skin, roughness: 0.88, sheen: 0.55, sheenRoughness: 0.55, sheenColor: new THREE.Color(0xbfe0ff) }),
     skinIn: new THREE.MeshStandardMaterial({ color: COL.skinIn, roughness: 0.6 }),
-    hair: new THREE.MeshPhysicalMaterial({ color: COL.hair, roughness: 0.55, sheen: 0.5, sheenRoughness: 0.45, sheenColor: new THREE.Color(0xf4ffc0), side: THREE.DoubleSide }),
-    sweater: new THREE.MeshPhysicalMaterial({ color: COL.sweater, roughness: 0.85, sheen: 0.6, sheenRoughness: 0.5, sheenColor: new THREE.Color(0x5a6280), bumpMap: knit, bumpScale: 0.9 }),
-    rib: new THREE.MeshPhysicalMaterial({ color: COL.rib, roughness: 0.9, sheen: 0.5, sheenColor: new THREE.Color(0x505670) }),
-    jeans: new THREE.MeshStandardMaterial({ color: COL.jeans, roughness: 0.78 }),
-    jeansHem: new THREE.MeshStandardMaterial({ color: COL.jeansHem, roughness: 0.8 }),
-    shoe: new THREE.MeshStandardMaterial({ color: COL.shoe, roughness: 0.6 }),
-    sole: new THREE.MeshStandardMaterial({ color: COL.sole, roughness: 0.5 }),
-    lace: new THREE.MeshStandardMaterial({ color: COL.lace, roughness: 0.6 }),
-    eye: new THREE.MeshPhysicalMaterial({ color: COL.eye, roughness: 0.08, clearcoat: 1, clearcoatRoughness: 0.05 }),
-    white: new THREE.MeshStandardMaterial({ color: COL.white, roughness: 0.35 }),
+    // пряжа волос: sheen лаймовый + витки нитей (2–3 скрученные пряди) по длине трубки — bump
+    hair: new THREE.MeshPhysicalMaterial({ color: COL.hair, roughness: 0.5, sheen: 0.5, sheenRoughness: 0.4, sheenColor: new THREE.Color(0xf4ffc0), side: THREE.DoubleSide, bumpMap: yarnHair, bumpScale: 0.55 }),
+    sweater: new THREE.MeshPhysicalMaterial({ color: COL.sweater, roughness: 0.85, sheen: 0.6, sheenRoughness: 0.5, sheenColor: new THREE.Color(0x5a6280), bumpMap: knit, bumpScale: 1.1 }),
+    rib: new THREE.MeshPhysicalMaterial({ color: COL.rib, roughness: 0.9, sheen: 0.5, sheenColor: new THREE.Color(0x505670), bumpMap: rib, bumpScale: 0.8 }),
+    // джинсы: саржа + строчка по шву запечены в map (цвет — белый материал, иначе умножение гасит светлую нить)
+    jeans: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75, map: denim, bumpMap: denim, bumpScale: 0.3 }),
+    jeansHem: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75, map: stitch }),
+    shoe: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.62, map: shoeFab, bumpMap: shoeFab, bumpScale: 0.35 }),
+    sole: new THREE.MeshPhysicalMaterial({ color: COL.sole, roughness: 0.3, clearcoat: 0.4, clearcoatRoughness: 0.25 }),
+    lace: new THREE.MeshStandardMaterial({ color: COL.lace, roughness: 0.55, bumpMap: yarnLace, bumpScale: 0.35 }),
+    // пуговицы глаз: глянец, без ворса
+    eye: new THREE.MeshPhysicalMaterial({ color: COL.eye, roughness: 0.05, clearcoat: 1, clearcoatRoughness: 0.04 }),
+    white: new THREE.MeshStandardMaterial({ color: COL.white, roughness: 0.42 }),
     shine: new THREE.MeshBasicMaterial({ color: 0xffffff }),
     brow: new THREE.MeshStandardMaterial({ color: COL.brow, roughness: 0.7 }),
     mouth: new THREE.MeshStandardMaterial({ color: COL.mouth, roughness: 0.6 }),
     teeth: new THREE.MeshStandardMaterial({ color: COL.teeth, roughness: 0.3 }),
     tongue: new THREE.MeshStandardMaterial({ color: COL.tongue, roughness: 0.5 }),
     blush: new THREE.MeshBasicMaterial({ color: COL.blush, transparent: true, opacity: 0.22, depthWrite: false }),
-    flowerA: new THREE.MeshStandardMaterial({ color: COL.flowerA, roughness: 0.65 }),
-    flowerB: new THREE.MeshStandardMaterial({ color: COL.flowerB, roughness: 0.65 }),
+    // войлочные лепестки — матовые с ворсом
+    flowerA: new THREE.MeshStandardMaterial({ color: COL.flowerA, roughness: 0.82 }),
+    flowerB: new THREE.MeshStandardMaterial({ color: COL.flowerB, roughness: 0.82 }),
+    // бусины-серединки цветов — глянцевые; один материал на оба оттенка через вершинный цвет (экономит draw call)
+    bead: new THREE.MeshPhysicalMaterial({ color: 0xffffff, vertexColors: true, roughness: 0.14, clearcoat: 1, clearcoatRoughness: 0.08 }),
   };
+  if (!LOW){
+    patchFibre(mats.skin, { freq: 110, amp: 0.06, nrm: 0.17 });
+    patchFibre(mats.hair, { freq: 150, amp: 0.05, nrm: 0.08 });
+    patchFibre(mats.sweater, { freq: 170, amp: 0.03, nrm: 0.06 });
+    patchFibre(mats.rib, { freq: 170, amp: 0.03, nrm: 0.07 });
+    patchFibre(mats.flowerA, { freq: 140, amp: 0.06, nrm: 0.14 });
+    patchFibre(mats.flowerB, { freq: 140, amp: 0.06, nrm: 0.14 });
+  }
   const hurtMats = [mats.skin, mats.hair, mats.sweater, mats.jeans];
 
   // ---------- скелет из групп ----------
@@ -122,8 +261,14 @@ export function createRizyToy(opts = {}){
 
   // накопитель: детали сливаются по (группа, материал) — мало draw calls
   const acc = new Map();
-  function add(group, mat, geo, m){
+  // color — опционально: THREE.Color на вершину (нужен только mats.bead — один материал даёт оба оттенка бусин)
+  function add(group, mat, geo, m, color){
     geo = clean(geo); if (m) geo.applyMatrix4(m);
+    if (color){
+      const n = geo.attributes.position.count, arr = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++){ arr[i * 3] = color.r; arr[i * 3 + 1] = color.g; arr[i * 3 + 2] = color.b; }
+      geo.setAttribute("color", new THREE.Float32BufferAttribute(arr, 3));
+    }
     const key = group.uuid + "|" + mat.uuid;
     if (!acc.has(key)) acc.set(key, { group, mat, list: [] });
     acc.get(key).list.push(geo);
@@ -164,7 +309,7 @@ export function createRizyToy(opts = {}){
       const n = V3(Math.sin(az) / r, 0, Math.cos(az) / (r * 0.74 * 0.74)).normalize();
       return { p, n };
     };
-    const flower = (group, az, y, size, petal, center, tilt, surfFn) => {
+    const flower = (group, az, y, size, petal, beadColor, tilt, surfFn) => {
       const { p, n } = surfFn(az, y);
       const q = qTo(n).multiply(qE(0, 0, tilt));
       for (let k = 0; k < 5; k++){
@@ -172,11 +317,13 @@ export function createRizyToy(opts = {}){
         const lp = V3(Math.cos(a) * size * 0.52, Math.sin(a) * size * 0.52, 0).applyQuaternion(q);
         add(group, petal, sph(size * 0.5, 10, 8), M4(p.clone().add(lp).addScaledVector(n, 0.004), q.clone().multiply(qE(0, 0, a)), V3(1, 0.62, 0.34)));
       }
-      add(group, center, sph(size * 0.3, 10, 8), M4(p.clone().addScaledVector(n, 0.012), q, V3(1, 1, 0.55)));
+      // бусина-серединка: глянцевый mats.bead на всех цветках, оттенок — через вершинный цвет
+      add(group, mats.bead, sph(size * 0.3, 10, 8), M4(p.clone().addScaledVector(n, 0.012), q, V3(1, 1, 0.55)), beadColor);
     };
+    const beadLime = new THREE.Color(COL.flowerA), beadBlue = new THREE.Color(COL.flowerB);
     const F = [[-0.42, 0.21, 0.058, 0], [0.38, 0.23, 0.052, 1], [0.05, 0.1, 0.06, 1], [-0.62, 0.07, 0.05, 0], [0.7, 0.09, 0.055, 0],
                [PI - 0.3, 0.2, 0.055, 1], [PI + 0.35, 0.1, 0.058, 0], [PI + 0.05, 0.26, 0.05, 0]];
-    F.forEach(([az, y, sz, c], i) => flower(torso, az, y, sz, c ? mats.flowerB : mats.flowerA, c ? mats.flowerA : mats.flowerB, i * 0.7, surf));
+    F.forEach(([az, y, sz, c], i) => flower(torso, az, y, sz, c ? mats.flowerB : mats.flowerA, c ? beadLime : beadBlue, i * 0.7, surf));
 
     // ===== РУКИ: рукав-капсула, манжета, синяя кисть =====
     for (const [i, s] of [-1, 1].entries()){
@@ -185,7 +332,7 @@ export function createRizyToy(opts = {}){
       add(A, mats.rib, new THREE.CylinderGeometry(0.07, 0.07, 0.05, S(10, 16, 20)), M4(V3(0, -0.265, 0)));
       add(A, mats.skin, sph(0.056, 16, 12), M4(V3(0, -0.325, 0.005), null, V3(0.9, 1.1, 0.8)));
       add(A, mats.skin, sph(0.024, 10, 8), M4(V3(-s * 0.04, -0.305, 0.03)));
-      flower(A, s * PI / 2, -0.12, 0.045, i ? mats.flowerA : mats.flowerB, i ? mats.flowerB : mats.flowerA, 0.4,
+      flower(A, s * PI / 2, -0.12, 0.045, i ? mats.flowerA : mats.flowerB, i ? beadBlue : beadLime, 0.4,
         (az, y) => ({ p: V3(Math.sin(az) * 0.068, y, Math.cos(az) * 0.068), n: V3(Math.sin(az), 0, Math.cos(az)) }));
     }
   }
@@ -412,7 +559,7 @@ export function createRizyToy(opts = {}){
   function dispose(){
     for (const m of meshes) m.geometry.dispose();
     for (const m of Object.values(mats)) m.dispose();
-    knit.dispose();
+    for (const t of [knit, rib, denim, stitch, shoeFab, yarnHair, yarnLace]) t.dispose();
   }
 
   update(0, { grounded: true, speed: 0, facing: 1 });
