@@ -7,6 +7,10 @@
 // Материалы — PBR; отражения золота/хрома приходят через scene.environment (PMREM, см. sky.js/main.js).
 // Draw calls: подушка/тело/золото/хром/декор стен (5; статичные платформы, направляющие лифтов и дальние
 // колонны пропастей — в тех же батчах) + по 4 меша на движущуюся платформу (плита/золото/хром/свечение).
+// Ночь (уровень 2): общий свет сцены намеренно тусклый и холодный (см. levels/index.js — «тёплые блики
+// дают материалы, не общий свет»), поэтому тело стены/столешница получают свой ночной тон (NIGHT_TOP/
+// NIGHT_CAP) и слабый тёплый emissive — иначе сливки тонут в серость. Тёплые окна-арки — не геометрия
+// стен, а точки общего «живого» слоя (см. life.js scatterWindows).
 import * as THREE from "three";
 import { PAL } from "../config.js";
 import { Batch } from "./geo.js";
@@ -25,9 +29,17 @@ const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const H = Math.PI / 2;
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _n = new THREE.Vector3(), _col = new THREE.Color();
 const _p = new THREE.Vector3(), _s = new THREE.Vector3(), _q0 = new THREE.Quaternion(), _m = new THREE.Matrix4();
-// ночная гамма стен — не серый бетон, а сливки в лунном свете (голубовато-кремовый); лунный кант —
-// холодная подсветка у самой верхней кромки (см. face()); NIGHT_TOP красит саму штукатурку холоднее.
-const NIGHT_TOP = 0xd8dcef, NIGHT_RIM = 0xe7edff;
+// ночная гамма стен — не серый бетон, а сливки в лунном свете (голубовато-кремовый), НЕ нейтрально-серый.
+// Была ошибка: старый NIGHT_TOP (0xd8dcef) перемножался с уже тёплой текстурой face-штукатурки
+// (creamTexture ≈ 0xf4ebdd) и гасил тепло почти до нейтрала — 244×216/255≈207, 235×220/255≈203,
+// 221×239/255≈207 (R≈B!) — то есть чистый серый, а не кремовый. Новый тон режет красный/зелёный заметно
+// слабее синего, поэтому после умножения на тёплую текстуру остаётся видимый кремовый след с холодным
+// сдвигом — «сливки под луной», а не бетон. Лунный кант — холодная подсветка у самой верхней кромки
+// (см. face()); NIGHT_CAP — карниз и столешницы платформ (см. wallCap/discPlatform) — светлее и теплее
+// тела стены (горизонтальные поверхности ловят тёплый отражённый свет, вертикальные фасады — холодный
+// лунный, см. столп «каждый участок — открытка» и задачу полировки).
+const NIGHT_TOP = 0xd7ddf2, NIGHT_RIM = 0xf0f4ff;
+const NIGHT_CAP = [0xfff2df, PAL.gold, PAL.chrome];
 
 // ---------- низкоуровневые помощники: треугольники с явными нормалями прямо в Batch ----------
 function vtx(b, p, n, u, v, c){
@@ -182,13 +194,18 @@ function dayFacade(B, s, yFace, rnd){
     }
   }
 }
-// ---------- ночь: золотой пояс-рельеф на высоких стенах — плиты перестают быть голыми серыми плитами ----------
+// ---------- ночь: золотой пояс-рельеф под карнизом — как дневные кронштейны (dayFacade), плиты
+// перестают быть голыми серыми плитами ----------
+// Раньше пояс висел на 34–46% высоты ОТ ОБЩЕЙО НИЗА (y0 = −14 у всех блоков, включая невидимую «ножку»
+// далеко под кадром) — для невысоких платформ это уводило пояс на много единиц НИЖЕ видимой камерой
+// зоны, и его попросту не было видно. Теперь пояс считается от карниза (yFace) — «под карнизом, как
+// днём» буквально, и всегда в кадре у верхней кромки стены.
 function nightBelt(B, s, yFace, rnd){
-  const { x0, x1, y0 } = s, w = x1 - x0, h = yFace - y0;
-  if (w < 3.4 || h < 3) return;
-  const by = y0 + h * (0.34 + 0.12 * rnd());
+  const { x0, x1, y0 } = s, w = x1 - x0;
+  if (w < 3.4 || yFace - y0 < 1.7) return;
+  const by = yFace - (1.05 + rnd() * 0.55);
   B.gold.quad(V(x0 + 0.1, by, ZF + 0.01), V(x1 - 0.1, by, ZF + 0.01), V(x1 - 0.1, by + 0.16, ZF + 0.01), V(x0 + 0.1, by + 0.16, ZF + 0.01), null, PAL.gold);
-  B.body.quad(V(x0 + 0.1, by - 0.22, ZF + 0.006), V(x1 - 0.1, by - 0.22, ZF + 0.006), V(x1 - 0.1, by, ZF + 0.006), V(x0 + 0.1, by, ZF + 0.006), null, 0xb6b8d6);
+  B.body.quad(V(x0 + 0.1, by - 0.24, ZF + 0.006), V(x1 - 0.1, by - 0.24, ZF + 0.006), V(x1 - 0.1, by, ZF + 0.006), V(x0 + 0.1, by, ZF + 0.006), null, 0xb2b8db);
 }
 
 // уровень «ночной» ли — определяем по данным уровня, не по отдельному флагу (level2.js — единственный
@@ -226,11 +243,13 @@ export function buildWalls(level, renderer){
     const lowL = !nL || nL.y1 < y1 - eps, lowR = !nR || nR.y1 < y1 - eps;
     const ovL = col ? 0.27 : (lowL ? OV : 0), ovR = col ? 0.27 : (lowR ? OV : 0);
     const endL = col || !nL || Math.abs(nL.y1 - y1) > eps, endR = col || !nR || Math.abs(nR.y1 - y1) > eps;
-    wallCap(B, x0 - ovL, x1 + ovR, y1, ZF, ZB, endL, endR);
+    wallCap(B, x0 - ovL, x1 + ovR, y1, ZF, ZB, endL, endR, isNight ? NIGHT_CAP : CAP_COLORS);
     if (col) columnDeco(B, s);
   }
-  // статичные платформы «насквозь снизу» — прямо в общие батчи стен, без лишних draw call'ов
-  for (const o of level.oneways) discPlatform(B.top, B.gold, B.chrome, (o.x0 + o.x1) / 2, o.y, o.x1 - o.x0, DISC.bowl);
+  // статичные платформы «насквозь снизу» — прямо в общие батчи стен, без лишних draw call'ов; ночью
+  // столешница светлее и теплее (NIGHT_CAP[0]), как и карниз стен — см. NIGHT_TOP/NIGHT_CAP выше
+  const platformTop = isNight ? NIGHT_CAP[0] : 0xffffff;
+  for (const o of level.oneways) discPlatform(B.top, B.gold, B.chrome, (o.x0 + o.x1) / 2, o.y, o.x1 - o.x0, DISC.bowl, platformTop);
   // направляющие штанги лифтов — тоже статичное золото
   for (const m of level.movers) if (m.ay) railGuides(B.gold, m);
   backdropPits(level, B);
@@ -240,8 +259,15 @@ export function buildWalls(level, renderer){
   // envMapIntensity разный: матовым сливкам — лёгкий намёк на небо (иначе отражение выбеливает
   // штукатурку), золоту/хрому — полная сила (для них отражение и есть материал)
   const creamTex = creamTexture(renderer), topTex = creamTopTexture(renderer);
-  const creamMat = new THREE.MeshStandardMaterial({ map: creamTex, vertexColors: true, roughness: 0.62, metalness: 0, envMapIntensity: 0.45 });
-  const topMat = new THREE.MeshStandardMaterial({ map: topTex, vertexColors: true, roughness: 0.45, metalness: 0, envMapIntensity: 0.3 });
+  const creamMat = new THREE.MeshStandardMaterial({ map: creamTex, vertexColors: true, roughness: 0.62, metalness: 0, envMapIntensity: isNight ? 0.6 : 0.45 });
+  const topMat = new THREE.MeshStandardMaterial({ map: topTex, vertexColors: true, roughness: 0.45, metalness: 0, envMapIntensity: isNight ? 0.5 : 0.3 });
+  if (isNight){
+    // общий свет сцены ночью намеренно тусклый и холодный (levels/index.js: «тёплые блики дают
+    // материалы, не общий свет») — без слабой самосветимости сливки/столешницы тонут в тень и читаются
+    // серыми, а не кремовыми; тёплый emissive держит минимальный тон/яркость независимо от освещения
+    creamMat.emissive.set(0x453f5c); creamMat.emissiveIntensity = 0.5;
+    topMat.emissive.set(0x5a4527); topMat.emissiveIntensity = 0.55;
+  }
   const goldMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.25, metalness: 1, envMapIntensity: 1.3 });
   const chromeMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.12, metalness: 1, envMapIntensity: 1.25 });
   const decoMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0, side: THREE.DoubleSide, envMapIntensity: 0.4 });
@@ -262,7 +288,7 @@ export function buildWalls(level, renderer){
   const nMovers = Math.max(1, level.movers.length);
   const unitW = DISC.rz * 2;
   const utb = new Batch(), ugb = new Batch(), ucb = new Batch(), ulb = new Batch();
-  discPlatform(utb, ugb, ucb, 0, 0, unitW, DISC.bowlMover);
+  discPlatform(utb, ugb, ucb, 0, 0, unitW, DISC.bowlMover, platformTop);
   moverGlow(ulb, 0, unitW);
   const moverTop = new THREE.InstancedMesh(utb.build(), topMat, nMovers);
   const moverGold = new THREE.InstancedMesh(ugb.build(), goldMat, nMovers);
@@ -304,7 +330,8 @@ function revolve(b, prof, seg, M, color){
 
 // платформа-«бокал» (центр cx, верх y, ширина w): сливочная плита со скруглённой кромкой, золотой обод,
 // хромовая чаша, сужающаяся к золотому навершию. В плане — овал: по x полуось w/2, по z — DISC.rz.
-function discPlatform(top, gold, chrome, cx, y, w, bowlH){
+// topTint — цвет плиты (день/статичный вызов — белый = чистая текстура; ночь — NIGHT_CAP[0], см. buildWalls).
+function discPlatform(top, gold, chrome, cx, y, w, bowlH, topTint = 0xffffff){
   const R = DISC.rz;
   const M = new THREE.Matrix4().compose(V(cx, y, 0), new THREE.Quaternion(), V((w / 2) / R, 1, 1));
   const cushion = [{ o: 0, y: 0, no: 0, ny: 1 }, ...arc(R - 0.12, -0.12, 0.12, 0.12, H, -H, 7), { o: 0, y: -0.24, no: 0, ny: -1 }];
@@ -312,7 +339,7 @@ function discPlatform(top, gold, chrome, cx, y, w, bowlH){
   const r0 = R - 0.16, bowl = [];
   for (let i = 0; i <= 10; i++){ const t = i / 10; bowl.push({ o: r0 * Math.pow(1 - Math.pow(t, 1.8), 0.72), y: -0.38 - bowlH * t }); }
   smoothNormals(bowl);
-  revolve(top, cushion, 28, M, 0xffffff);
+  revolve(top, cushion, 28, M, topTint);
   revolve(gold, rim, 28, M, PAL.gold);
   revolve(chrome, bowl, 20, M, PAL.chrome);
   // золотое навершие-капля под чашей

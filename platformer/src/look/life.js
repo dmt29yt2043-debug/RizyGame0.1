@@ -1,8 +1,11 @@
 // «Живой» фон и мелкие огоньки — один общий THREE.Points (1 draw call на ВСЁ, бюджет ≤150 тесный):
-//   • летающие тарелки (хром/золото, с огоньками) — пересекают небо на разной глубине, день и ночь;
+//   • летающие тарелки — маленький хромово-золотой диск-купол в тон дальнего плана (корпус ЗАВЕДОМО
+//     темнее порога bloom, см. SAUCER_BODY) + 3–6 отдельных крошечных огоньков по ободу (своя точка на
+//     каждый, ЯРЧЕ порога — только они и цветут); раньше корпус был почти белым и bloom выжигал его в
+//     пятно — теперь бум только на огоньках, форма корпуса всегда читается;
 //   • день — лепестки и пыльца в воздухе; ночь — светлячки у лиан/цветов и редкие падающие звёзды;
-//   • тёплые окна ночных стен (мерцают, некоторые чаще) и искры-акценты ориентиров (landmarks.js) —
-//     тоже точки этой системы, не отдельные меши;
+//   • тёплые окна-арки ночных стен и колонн (мерцают, некоторые чаще) и искры-акценты ориентиров
+//     (landmarks.js) — тоже точки этой системы, не отдельные меши;
 //   • редкий размытый передний слой у камеры (кусты/фонари/перила силуэтами, z ≈ +6…+9) — выключен на low.
 // Всё — точечные спрайты с процедурной формой во фрагментном шейдере (как fx.js), без текстур и без
 // лишних геометрий. Учитывает ?q=low (меньше саучеров/пыли, передний план выключен).
@@ -61,39 +64,51 @@ const FRAG = /* glsl */`
       float body = smoothstep(1.0, 0.0, abs(p.y) * 7.0);
       float tail = clamp(smoothstep(-1.0, 0.7, p.x), 0.0, 1.0) * smoothstep(1.0, 0.3, p.x);
       a = body * tail;
-    } else {
-      // тарелка: приплюснутый корпус + купол сверху, с двумя огоньками по бокам
+    } else if (vShape < 2.5){
+      // тарелка: приплюснутый корпус + купол сверху — ТОЛЬКО силуэт, без ярких огоньков (те теперь
+      // отдельные точки, shape 0, см. createLife — так корпус остаётся ниже порога bloom, а огоньки выше)
       vec2 q = vec2(p.x, p.y * 2.4);
-      float body = smoothstep(1.0, 0.72, length(q));
-      vec2 dq = vec2(p.x * 1.7, (p.y - 0.3) * 1.9);
-      float dome = smoothstep(1.0, 0.55, length(dq));
-      float shade = 1.0 - 0.3 * clamp(p.y * 0.7 + 0.35, 0.0, 1.0);
-      a = clamp(max(body, dome * 0.95), 0.0, 1.0) * shade;
-      float l1 = smoothstep(0.22, 0.0, length(p - vec2(0.55, -0.02)));
-      float l2 = smoothstep(0.22, 0.0, length(p - vec2(-0.55, -0.02)));
-      a = clamp(a + (l1 + l2) * 0.9, 0.0, 1.0);
+      float body = smoothstep(0.96, 0.74, length(q));
+      // купол — НАД корпусом: gl_PointCoord.y растёт вниз, поэтому «выше» — это МЕНЬШИЙ p.y (смещаем на -0.3)
+      vec2 dq = vec2(p.x * 1.7, (p.y + 0.3) * 1.9);
+      float dome = smoothstep(0.92, 0.6, length(dq));
+      float shade = 1.0 - 0.35 * clamp(p.y * 0.7 + 0.35, 0.0, 1.0);
+      a = clamp(max(body, dome * 0.95), 0.0, 1.0) * shade * 0.82;
+    } else {
+      // окно-арка (тёплые окна ночных стен/колонн): снизу прямоугольник (Chebyshev-расстояние — плоские
+      // бока и низ), сверху свод (окружность) — читается как арка, не как кружок-искра
+      vec2 q = vec2(p.x / 0.4, p.y);
+      float dRect = max(abs(q.x), max(0.0, -(q.y + 0.05)) / 0.85);
+      float dArch = length(vec2(q.x, max(0.0, q.y - 0.05) / 0.85));
+      float dist = q.y > 0.05 ? dArch : dRect;
+      a = smoothstep(1.05, 0.66, dist);
     }
     if (a * vAlpha < 0.008) discard;
     gl_FragColor = vec4(vColor, a * vAlpha);
     #include <colorspace_fragment>
   }`;
 
-// окна на лицах стен (ночь): точки-искры со своей случайной фазой мерцания; башни ("tower") пропускаем —
-// узкое лицо колонны окнами не украшают в этом языке форм
+// окна-арки на лицах стен И колонн (ночь): точки со своей случайной фазой мерцания. Колонны (башни/keep) —
+// одна центральная колонка окон (лицо узкое, но высокое — весь фасад голым не бывает); широкие стены —
+// несколько колонок, как раньше.
 function scatterWindows(level, rnd){
   const pts = [];
   for (const s of level.solids){
-    if (s.kind === "tower") continue;
+    const isCol = s.kind === "keep" || s.kind === "tower";
     const w = s.x1 - s.x0, yTop = s.y1 + CAP.bottom, h = yTop - s.y0;
-    if (w < 2.6 || h < 2.1) continue;
-    const cols = Math.max(1, Math.round(w / 1.15)), rows = Math.min(3, Math.max(1, Math.round((h - 1.3) / 1.35)));
+    if (w < (isCol ? 0.9 : 2.6) || h < 2.1) continue;
+    const cols = isCol ? 1 : Math.max(1, Math.round(w / 1.15)), rows = Math.min(isCol ? 5 : 3, Math.max(1, Math.round((h - 1.3) / 1.35)));
     for (let r = 0; r < rows; r++){
       const y = yTop - 0.75 - r * 1.35;
       if (y < s.y0 + 0.6) continue;
       for (let c = 0; c < cols; c++){
-        if (rnd() < 0.34) continue;                                            // не все окна светятся
-        const x = s.x0 + (c + 0.5) * (w / cols) + (rnd() - 0.5) * 0.3;
-        pts.push({ x, y, z: ZF + 0.05, phase: rnd() * 62.8, flick: rnd() < 0.3 });
+        if (rnd() < 0.3) continue;                                             // не все окна светятся
+        const x = s.x0 + (c + 0.5) * (w / cols) + (rnd() - 0.5) * 0.3 * (isCol ? 0 : 1);
+        // +0.05 перед лицом стены было НЕДОСТАТОЧНО: near/far камеры (0.5/1400, см. main.js) дают грубый
+        // буфер глубины на игровых дистанциях — точка иногда проигрывала z-тест плоской стене позади и
+        // пропадала целиком (отсюда «окна почти не видно» — не яркость, а то, что их не рисовало вовсе).
+        // 0.3 — запас того же порядка, что у искр-акценты ориентиров (landmarks.js), они не пропадают.
+        pts.push({ x, y, z: ZF + 0.3, phase: rnd() * 62.8, flick: rnd() < 0.35 });
       }
     }
   }
@@ -118,10 +133,25 @@ function scatterForeground(level, rnd){
   return pts;
 }
 
+// тарелка: корпус (SAUCER_BODY_DAY/NIGHT) — заведомо ниже порога bloom (UnrealBloom threshold 1.0 в
+// post.js, см. createPost) — хромово-золотой днём / холодный хром-лаванда ночью, в тон дальнего плана,
+// не ярче задника; sRGB→linear даёт ≤ ~0.7 по каждому каналу (с запасом от требуемых 0.85). Огоньки
+// (SAUCER_LIGHT_DAY/NIGHT) — отдельные крошечные точки, умышленно ЯРЧЕ порога (только они и цветут).
+const SAUCER_BODY_DAY = 0xd9c9a3, SAUCER_BODY_NIGHT = 0xb9c3dd;
+const SAUCER_LIGHT_DAY = 0xfff0c0, SAUCER_LIGHT_NIGHT = 0xdfe8ff;
+const SAUCER_SIZE = 1.1;                                    // мировые ед. — на экране 1280×720 даёт ~25–45 px
+// 4 огонька по ободу (в диапазоне 3–6): смещения в долях SAUCER_SIZE от центра корпуса
+const SAUCER_LIGHTS = [
+  { dx: 0.40, dy: -0.03 }, { dx: -0.40, dy: -0.03 },
+  { dx: 0.15, dy: 0.14 }, { dx: -0.15, dy: 0.14 },
+];
+
 export function createLife(level, { night = false } = {}){
   const Q = currentQuality();
   const group = new THREE.Group(); group.name = "life";
   const rnd = makeRng(night ? 9001 : 9002);
+  const saucerBody = night ? SAUCER_BODY_NIGHT : SAUCER_BODY_DAY;
+  const saucerLight = night ? SAUCER_LIGHT_NIGHT : SAUCER_LIGHT_DAY;
 
   const nSaucer = Q === "low" ? 2 : Q === "high" ? 5 : 4;
   const nAmbient = Q === "low" ? 9 : Q === "high" ? 26 : 18;
@@ -146,7 +176,7 @@ export function createLife(level, { night = false } = {}){
   const glowPts = landmarkGlowSpots(level, night);
   const fgPts = fgOn ? scatterForeground(level, makeRng(5005)) : [];
 
-  const N = Math.max(1, saucers.length + ambient.length + shooters.length + winPts.length + glowPts.length + fgPts.length);
+  const N = Math.max(1, saucers.length * (1 + SAUCER_LIGHTS.length) + ambient.length + shooters.length + winPts.length + glowPts.length + fgPts.length);
   const geo = new THREE.BufferGeometry();
   const pos = new Float32Array(N * 3), col = new Float32Array(N * 3), size = new Float32Array(N), alpha = new Float32Array(N), shape = new Float32Array(N);
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
@@ -169,14 +199,21 @@ export function createLife(level, { night = false } = {}){
   function update(t, camX, camY){
     mat.uniforms.uScale.value = pixelScale();     // на случай ресайза окна — дёшево, 2 обращения к window
     let i = 0;
-    // саучеры
+    // саучеры: корпус (тон дальнего плана, ниже порога bloom) + 3–6 огоньков по ободу (ярче порога)
     for (const s of saucers){
       const x = s.hx + Math.sin(t * s.spd + s.ph) * s.amp;
       const y = (camY ?? 0) + s.yOff + Math.sin(t * 0.25 + s.ph) * 0.9;
       pos[i * 3] = x; pos[i * 3 + 1] = y; pos[i * 3 + 2] = s.z;
-      _c.set(0xeef2fb);
+      _c.set(saucerBody);
       col[i * 3] = _c.r; col[i * 3 + 1] = _c.g; col[i * 3 + 2] = _c.b;
-      size[i] = 1.6; alpha[i] = 0.92; shape[i] = 2; i++;
+      size[i] = SAUCER_SIZE; alpha[i] = 0.95; shape[i] = 2; i++;
+      for (const o of SAUCER_LIGHTS){
+        const tw = 0.6 + 0.4 * Math.max(0, Math.sin(t * 2.6 + s.ph * 3 + o.dx * 11));
+        pos[i * 3] = x + o.dx * SAUCER_SIZE; pos[i * 3 + 1] = y + o.dy * SAUCER_SIZE; pos[i * 3 + 2] = s.z + 0.03;
+        _c.set(saucerLight).multiplyScalar(1.1 + 0.4 * tw);
+        col[i * 3] = _c.r; col[i * 3 + 1] = _c.g; col[i * 3 + 2] = _c.b;
+        size[i] = 0.075 + 0.05 * tw; alpha[i] = 0.85 + 0.15 * tw; shape[i] = 0; i++;
+      }
     }
     // амбиент (лепестки/пыльца/светлячки) — крутятся вокруг текущей позиции камеры по x, мягкий дрейф/мерцание
     const cx = camX ?? 0, cy = camY ?? 1.5;
@@ -205,13 +242,14 @@ export function createLife(level, { night = false } = {}){
       } else { pos[i * 3 + 1] = -999; alpha[i] = 0; size[i] = 0; shape[i] = 1; }
       i++;
     }
-    // окна (ночь) — статичные, тёплое мерцание у части из них
+    // окна-арки (ночь) — статичные, тёплое мерцание у части из них; крупнее и ярче прежних кружков,
+    // чтобы читались на обычном игровом кадре без зума (см. задачу полировки)
     for (const w of winPts){
       pos[i * 3] = w.x; pos[i * 3 + 1] = w.y; pos[i * 3 + 2] = w.z;
-      const flick = w.flick ? (0.6 + 0.4 * Math.max(0, Math.sin(t * 3.1 + w.phase))) : (0.88 + 0.12 * Math.sin(t * 0.6 + w.phase));
-      _c.set(0xffcf82).multiplyScalar(0.85 + 0.3 * flick);
+      const flick = w.flick ? (0.55 + 0.45 * Math.max(0, Math.sin(t * 3.1 + w.phase))) : (0.86 + 0.14 * Math.sin(t * 0.6 + w.phase));
+      _c.set(0xffb763).multiplyScalar(1.0 + 0.4 * flick);
       col[i * 3] = _c.r; col[i * 3 + 1] = _c.g; col[i * 3 + 2] = _c.b;
-      size[i] = 0.4; alpha[i] = 0.55 * flick + 0.15; shape[i] = 0; i++;
+      size[i] = 0.62; alpha[i] = 0.45 * flick + 0.4; shape[i] = 3; i++;
     }
     // искры-акценты ориентиров — мягкий пульс
     for (const g of glowPts){
