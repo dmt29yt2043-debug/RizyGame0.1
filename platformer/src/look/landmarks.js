@@ -127,7 +127,7 @@ function wheelLandmark(b, x, gy){
 function domeLandmark(b, x, gy){
   const R = 2.6, Z = -9.2, baseH = 1.0, cy = gy + baseH;
   if (b){
-    cyl(b.top, x, gy + baseH / 2, Z, R * 0.98, R, baseH, 0xe9f2ea, 22);
+    cyl(b.top, x, gy + baseH / 2, Z, R * 0.98, R, baseH, 0xfbf3e8, 22);
     ring(b.gold, x, cy, Z, R * 0.99, 0.07, PAL.gold, 24);
     const g = new THREE.SphereGeometry(R, 22, 12, 0, Math.PI * 2, 0, Math.PI * 0.55);
     b.top.add(g, new THREE.Matrix4().makeTranslation(x, cy, Z), 0xe3f5e8); g.dispose();
@@ -153,7 +153,7 @@ function domeLandmark(b, x, gy){
 // Раньше был голым серым конусом без окон; теперь — глубже в Z (дальний план, слегка в ночную дымку —
 // см. scene.fog в main.js, тут просто холоднее/темнее тон) и стволу задан x со сдвигом от середины
 // участка (SECTION_OFFSET), чтобы не торчать посреди кадра ровно там, где игрок лазает по лианам.
-const TOWER_TRUNK = 0xd2d7e8;
+const TOWER_TRUNK = 0xf7efe4;          // сливочный мрамор (ночную гамму даёт материал — matlib.js)
 // topY − gy держим заметно меньше видимой по вертикали зоны камеры на этом участке (ground здесь и так
 // высоко, ≈16.6 — см. sectionX/NIGHT_OFFSET), иначе купол с телескопом упираются в верхний край кадра
 function telescopeLandmark(b, x, gy){
@@ -170,7 +170,7 @@ function telescopeLandmark(b, x, gy){
     }
     // купол-обсерватория: светлее и холоднее ствола (иначе сливается с ним) — золотые рёбра-меридианы
     const dome = new THREE.SphereGeometry(domeR, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.58);
-    b.top.add(dome, new THREE.Matrix4().makeTranslation(x, topY, Z), 0xeef1fb); dome.dispose();
+    b.top.add(dome, new THREE.Matrix4().makeTranslation(x, topY, Z), 0xfffaf2); dome.dispose();
     for (let k = 1; k <= 2; k++){
       const h = domeR * 0.62 * (k / 2), rr = Math.sqrt(Math.max(0, domeR * domeR - h * h));
       ring(b.gold, x, topY + h, Z, rr, 0.02, PAL.gold, 14);
@@ -204,8 +204,12 @@ function telescopeLandmark(b, x, gy){
 function gateLandmark(b, x, gy){
   const R = 2.3, Z = -8.6, cy = gy + R + 0.3;
   if (b){
-    box(b.top, x - R - 0.3, gy + (R + 0.3) / 2, Z, 0.55, R + 0.3, 1.3, 0xe9ecf5);
-    box(b.top, x + R + 0.3, gy + (R + 0.3) / 2, Z, 0.55, R + 0.3, 1.3, 0xe9ecf5);
+    for (const sx of [-1, 1]){
+      const px = x + sx * (R + 0.3);
+      cyl(b.top, px, gy + (R + 0.3) / 2, Z, 0.3, 0.34, R + 0.3, 0xfbf3e8, 14);
+      ring(b.gold, px, gy + R + 0.26, Z, 0.34, 0.05, PAL.gold, 14);
+      ring(b.gold, px, gy + 0.12, Z, 0.37, 0.05, PAL.gold, 14);
+    }
     ring(b.chrome, x, cy, Z, R, 0.28, 0xdfe6f2, 26, 0);
     ring(b.gold, x, cy, Z, R + 0.03, 0.06, PAL.gold, 26, 0);
     ring(b.gold, x, cy, Z, R - 0.28, 0.05, PAL.gold, 22, 0);

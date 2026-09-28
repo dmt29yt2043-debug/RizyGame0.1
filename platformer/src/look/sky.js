@@ -13,25 +13,51 @@ import * as THREE from "three";
 import { PAL, CAM } from "../config.js";
 import { makeRng } from "./tex.js";
 import { createLife } from "./life.js";
+import { createCloudBanks } from "./cloudbank.js";
 
 const TAN = Math.tan(THREE.MathUtils.degToRad(CAM.fov / 2));
 // TextureLoader резолвит обычную строку относительно URL страницы, а не модуля — берём абсолютный
 // URL от этого файла (game/platformer/src/look/sky.js → ../../assets/bg/ = game/platformer/assets/bg/)
 const BG = new URL("../../assets/bg/", import.meta.url).href;
-const loader = new THREE.TextureLoader();
 
 // загрузка PNG асинхронна: копим промисы, чтобы main.js мог дождаться готовности перед первым
 // кадром (особенно важно для фоторежима — он рисует один кадр сразу, не дожидаясь сети/диска)
 const _pending = [];
 export function bgReady(){ return Promise.all(_pending); }
 
+// «Ложная глубина резкости»: нарисованные слои один раз размываем при загрузке (canvas-фильтр blur), дальние
+// сильнее ближних — игровой слой становится самым резким и контрастным в кадре (столп «Ризи — звезда кадра»).
+// Настоящий BokehPass остаётся только на high (post.js). Нет ctx.filter (старый Safari) — размытие
+// уменьшением-увеличением. px — радиус в пикселях картинки 1536×1024.
+function blurImage(img, px){
+  if (!(px > 0)) return img;
+  const W = img.width, H = img.height;
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d");
+  if (typeof g.filter === "string"){
+    // края слоёв и так растворены альфой (fadeMaterial), у неба края за кадром — полей под размытие не нужно
+    g.filter = `blur(${px}px)`;
+    g.drawImage(img, 0, 0);
+    g.filter = "none";
+    return c;
+  }
+  const k = Math.max(1.5, 1 + px * 0.6), sw = Math.max(8, Math.round(W / k)), sh = Math.max(8, Math.round(H / k));
+  const small = document.createElement("canvas"); small.width = sw; small.height = sh;
+  const sg = small.getContext("2d"); sg.imageSmoothingQuality = "high"; sg.drawImage(img, 0, 0, sw, sh);
+  g.clearRect(0, 0, W, H); g.imageSmoothingQuality = "high"; g.drawImage(small, 0, 0, W, H);
+  return c;
+}
+const imgLoader = new THREE.ImageLoader();
+
 // dir — подпапка уровня относительно assets/bg/ ("" — уровень 1, "l2/" — уровень 2); onResult(ok) — если
 // картинки ещё нет (уровень 2 генерируется параллельно с этой работой), вызывающий делает плавный фолбэк.
-function loadBg(name, dir = "", onResult){
+// blur — радиус «ложной глубины резкости» (см. blurImage).
+function loadBg(name, dir = "", onResult, blur = 0){
   let done;
   _pending.push(new Promise(res => { done = res; }));
-  const t = loader.load(BG + dir + name,
-    () => { done(); onResult && onResult(true); },
+  const t = new THREE.Texture();
+  imgLoader.load(BG + dir + name,
+    img => { t.image = blurImage(img, blur); t.needsUpdate = true; done(); onResult && onResult(true); },
     undefined,
     err => { console.warn("[sky] не загрузилась", dir + name, err); done(); onResult && onResult(false); });
   t.colorSpace = THREE.SRGBColorSpace;
@@ -40,6 +66,8 @@ function loadBg(name, dir = "", onResult){
   t.minFilter = THREE.LinearMipmapLinearFilter;
   return t;
 }
+// радиусы размытия по глубине (небо — дальше всех)
+const BLUR = { sky: 3.2, city: 2.6, clouds: 1.6, hall: 0.8 };
 
 // ---------- процедурный фолбэк ночного неба: градиент + звёзды + луна (пока нет sky-night.png) ----------
 function nightSkyFallback(){
@@ -84,7 +112,7 @@ export function createSky(camera, { dir = "", night = false } = {}){
   const tex = loadBg(name, dir, ok => {
     if (ok){ mat.map = tex; mat.needsUpdate = true; if (fallback) fallback.dispose(); }
     // !ok: картинки ещё нет — остаёмся на процедурном фолбэке (день без фолбэка — как раньше, просто пусто)
-  });
+  }, BLUR.sky);
   if (!night) mat.map = tex;
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), mat);
   mesh.name = "sky"; mesh.renderOrder = -100; mesh.frustumCulled = false;
@@ -114,11 +142,13 @@ export function createEnvironment(renderer, panorama, { night = false } = {}){
   const scene = new THREE.Scene();
   const geo = new THREE.SphereGeometry(1, 48, 24);
   // ночной процедурный фолбэк: лунно-голубой зенит → сливовый горизонт, холодный «блик» вместо солнечного
+  // низ — не тёмная «земля», а море облаков под городом (светлое, в цвет облаков задника): хромовые
+  // выкружки и чаши под ярусами отражают именно его — светлый металл с тёплыми рефлексами, как в концепте
   const NP = night ? {
-    low: 0x2a2050, mid: 0x362a5c, top: 0x171331, sun: 0xcfe0ff, ground: 0x0e0a20, horizon: 0x3a2c55,
+    low: 0x2a2050, mid: 0x362a5c, top: 0x171331, sun: 0xcfe0ff, ground: 0x2a2352, horizon: 0x6a5fa6,
     glint: 0xbcd4ff,
   } : {
-    low: PAL.skyLow, mid: PAL.skyMid, top: PAL.skyTop, sun: PAL.sun, ground: 0x5d5878, horizon: 0xf6d2b8,
+    low: PAL.skyLow, mid: PAL.skyMid, top: PAL.skyTop, sun: PAL.sun, ground: 0xc39aa0, horizon: 0xf8d6bf,
     glint: 0xfff0d8,
   };
   const mat = new THREE.ShaderMaterial({
@@ -128,7 +158,7 @@ export function createEnvironment(renderer, panorama, { night = false } = {}){
       uLow: { value: new THREE.Color(NP.low) }, uMid: { value: new THREE.Color(NP.mid) }, uTop: { value: new THREE.Color(NP.top) },
       uSun: { value: new THREE.Color(NP.sun) }, uSunDir: { value: new THREE.Vector3(night ? -0.5 : 0.6, 0.3, 0.5).normalize() },
       uGround: { value: new THREE.Color(NP.ground) }, uHorizon: { value: new THREE.Color(NP.horizon) },
-      uGlint: { value: new THREE.Vector3(night ? -0.16 : 0.16, 0.36, 0.92).normalize() }, uGlintC: { value: new THREE.Color(NP.glint).multiplyScalar(night ? 3 : 7) },
+      uGlint: { value: new THREE.Vector3(night ? -0.05 : 0.05, 0.34, 0.94).normalize() }, uGlintC: { value: new THREE.Color(NP.glint).multiplyScalar(night ? 5 : 9) },
     },
     vertexShader: `varying vec3 vP; void main(){ vP = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
     fragmentShader: `
@@ -139,8 +169,10 @@ export function createEnvironment(renderer, panorama, { night = false } = {}){
         vec3 d = normalize(vP);
         vec3 sky;
         if (uHas > 0.5){
-          // картинка на верхнюю полусферу: зенит — верх кадра, горизонт — линия города (v ≈ 0.66)
-          float u = atan(d.x, -d.z) / 6.2831853 + 0.5;
+          // картинка на верхнюю полусферу: зенит — верх кадра, горизонт — линия города (v ≈ 0.66).
+          // По горизонтали — зеркально и без шва: вглубь сцены (−z) — середина картинки (город), за спиной
+          // камеры (+z) — правый край (закат и солнце): лицевые грани отражают тёплый закат, а не шов картинки
+          float u = 0.5 + 0.5 * abs(atan(d.x, -d.z)) / 3.14159265;
           float el = asin(clamp(d.y, 0.0, 1.0)) / 1.5707963;
           vec2 uv = vec2(u, 1.0 - 0.66 * (1.0 - el));
           sky = texture2D(uPano, uv).rgb;
@@ -150,12 +182,14 @@ export function createEnvironment(renderer, panorama, { night = false } = {}){
           sky += uSun * pow(max(dot(d, uSunDir), 0.0), 9.0) * 1.2;
         }
         // низ: от тёплого горизонта к тёмной сливе
-        vec3 ground = mix(uHorizon, uGround, smoothstep(0.1, 0.65, -d.y));   // полоса у горизонта светлая — хром серебрится
+        vec3 ground = mix(uHorizon, uGround, smoothstep(0.05, 0.8, -d.y));   // облака под городом: светлые у горизонта, глубже — сиреневее
         vec3 c = d.y >= 0.0 ? sky : ground;
         c = mix(c, mix(sky, uHorizon, 0.5), (1.0 - smoothstep(0.0, 0.04, abs(d.y))) * 0.5);   // мягкий шов горизонта
         // HDR-блик закатного «окна» сверху-сзади камеры: его ловят золотые валики и хромовые чаши лицом
         // к зрителю — яркая кромка выше порога bloom (светящиеся золотые края, как в референсе)
-        c += uGlintC * pow(max(dot(d, uGlint), 0.0), 90.0);
+        // (почти по центру за камерой: скруглённые кромки ярусов, ободы дисков и бусины золота ловят его
+        // блестящей линией — главный «лак» мрамора и блеск золота, как в концепте)
+        c += uGlintC * pow(max(dot(d, uGlint), 0.0), 60.0);
         gl_FragColor = vec4(c, 1.0);
       }`,
   });
@@ -223,11 +257,11 @@ export function createBackdrop(level, { dir = "", night = false } = {}){
   // самая приглушённая/холодная дымка; облака — вполовину слабее (они и так мягкие); зал у финиша
   // («золотой зал», «обсерватория») не трогаем — он уже эталон композиции по ревью.
   const gradeCity = night
-    ? { desat: 0.16, haze: 0.14, hazeColor: 0x5b5aa0, contrast: 0.86 }
-    : { desat: 0.13, haze: 0.11, hazeColor: 0xffd9b8, contrast: 0.88 };
+    ? { desat: 0.18, haze: 0.18, hazeColor: 0x5b5aa0, contrast: 0.82 }
+    : { desat: 0.16, haze: 0.17, hazeColor: 0xffd9c4, contrast: 0.82 };
   const gradeClouds = night
-    ? { desat: 0.09, haze: 0.09, hazeColor: 0x6a6ab0, contrast: 0.93 }
-    : { desat: 0.07, haze: 0.06, hazeColor: 0xffe6cc, contrast: 0.94 };
+    ? { desat: 0.1, haze: 0.11, hazeColor: 0x6a6ab0, contrast: 0.9 }
+    : { desat: 0.08, haze: 0.09, hazeColor: 0xffe6d4, contrast: 0.9 };
 
   // ---- город: 6 тайлов a/b/c с зеркалами, перекрытие = ширина растворения краёв ----
   let cityMats = [];
@@ -236,7 +270,7 @@ export function createBackdrop(level, { dir = "", night = false } = {}){
     const hh = halfH(D), h = 34, w = h * IMG_ASPECT;
     const yBot = centerY(REF_Y, D) - 0.86 * hh;                         // низ облачного подножия — под кадром
     const names = night ? ["city-night-a.png", "city-night-b.png", "city-night-c.png"] : ["city-mid-a.png", "city-mid-b.png", "city-mid-c.png"];
-    const texs = names.map((n, i) => loadBg(n, dir, ok => { if (!ok) mats[i].opacity = 0; }));
+    const texs = names.map((n, i) => loadBg(n, dir, ok => { if (!ok) mats[i].opacity = 0; }, BLUR.city));
     const mats = texs.map(t => fadeMaterial(t, { fx: FX, fb: 0.12, solid: 1, ...gradeCity }));
     cityMats = mats;
     disposers.push(() => { for (const t of texs) t.dispose(); for (const m of mats) m.dispose(); });
@@ -258,6 +292,11 @@ export function createBackdrop(level, { dir = "", night = false } = {}){
     layers.push({ g: mid, P, PY });
   }
 
+  // ---- облака под ярусами (cloudbank.js): мир, без параллакса; текстуру получат, когда загрузятся облака ----
+  const banks = createCloudBanks(level);
+  group.add(banks.mesh);
+  disposers.push(() => banks.dispose());
+
   // ---- облака: одна широкая плоскость, MirroredRepeat по x, медленный дрейф ----
   let cloudsTex;
   {
@@ -270,10 +309,11 @@ export function createBackdrop(level, { dir = "", night = false } = {}){
     const cloudsMat = fadeMaterial(null, { fb: 0.1, fx: 0.02, opacity: 0.88, ...gradeClouds });
     cloudsTex = loadBg(night ? "clouds-night.png" : "clouds.png", dir, ok => {
       if (!ok){ cloudsMat.opacity = 0; return; }
+      banks.setTexture(cloudsTex);              // облака под ярусами — своя копия (без повтора и дрейфа)
       cloudsTex.wrapS = THREE.MirroredRepeatWrapping; cloudsTex.wrapT = THREE.ClampToEdgeWrapping;
       cloudsTex.repeat.set(reps, 1);
       cloudsMat.map = cloudsTex; cloudsMat.needsUpdate = true;
-    });
+    }, BLUR.clouds);
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w * reps, h), cloudsMat);
     mesh.position.set((lo + hi) / 2, yBot + h / 2, CAM.dist - D);
     mesh.renderOrder = -40;
@@ -296,7 +336,7 @@ export function createBackdrop(level, { dir = "", night = false } = {}){
     mat.customProgramCacheKey = () => "bg-hall";
     const hallTex = loadBg(night ? "finale-night.png" : "hall.png", dir, ok => {
       if (ok){ mat.map = hallTex; mat.needsUpdate = true; if (fallback) fallback.dispose(); }
-    });
+    }, BLUR.hall);
     if (!night) mat.map = hallTex;
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
     mesh.position.set(level.heart.x - 3, centerY(3, D) + 1.2, CAM.dist - D);

@@ -136,7 +136,7 @@ async function buildLevel(def){
   const backdrop = createBackdrop(level, { dir: def.bgDir, night: def.night });
   await bgReady();          // дождаться PNG-слоёв задника перед первым кадром (важно для фоторежима)
   const envTex = createEnvironment(renderer, sky.texture, { night: def.night });
-  const walls = buildWalls(level, renderer);
+  const walls = await buildWalls(level, renderer, { night: def.night, quality: QNAME });   // async: нарисованные текстуры (assets/tex) — если есть
   if (QC.shadows) walls.group.traverse(o => { if (o.isMesh) o.receiveShadow = true; });
   const flowers = createFlowers(level, { density: QNAME === "low" ? 0.6 : 1, biolum: def.look.biolumFlowers });
   const vines = createClimbVines(level, { glowTex, bloom: bloomOn, biolum: def.look.biolumFlowers });

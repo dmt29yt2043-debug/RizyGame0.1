@@ -4,16 +4,17 @@
 //     каждый, ЯРЧЕ порога — только они и цветут); раньше корпус был почти белым и bloom выжигал его в
 //     пятно — теперь бум только на огоньках, форма корпуса всегда читается;
 //   • день — лепестки и пыльца в воздухе; ночь — светлячки у лиан/цветов и редкие падающие звёзды;
-//   • тёплые окна-арки ночных стен и колонн (мерцают, некоторые чаще) и искры-акценты ориентиров
-//     (landmarks.js) — тоже точки этой системы, не отдельные меши;
+//   • искры-акценты ориентиров (landmarks.js) и ореолы фонарей ярусов — тоже точки этой системы, не
+//     отдельные меши (окна ярусов теперь настоящие — стекло аркад, walls.js);
 //   • редкий размытый передний слой у камеры (кусты/фонари/перила силуэтами, z ≈ +6…+9) — выключен на low.
 // Всё — точечные спрайты с процедурной формой во фрагментном шейдере (как fx.js), без текстур и без
 // лишних геометрий. Учитывает ?q=low (меньше саучеров/пыли, передний план выключен).
 import * as THREE from "three";
 import { CAM } from "../config.js";
 import { makeRng } from "./tex.js";
-import { ZF, CAP } from "./walls.js";
+import { LAMP } from "./walls.js";
 import { landmarkGlowSpots } from "./landmarks.js";
+import { decorSpots } from "./layout.js";
 import { loadProgress } from "../save.js";
 
 // пикселей на мировую единицу на расстоянии 1 от камеры (как в fx.js) — свой расчёт, без renderer/camera:
@@ -88,32 +89,6 @@ const FRAG = /* glsl */`
     #include <colorspace_fragment>
   }`;
 
-// окна-арки на лицах стен И колонн (ночь): точки со своей случайной фазой мерцания. Колонны (башни/keep) —
-// одна центральная колонка окон (лицо узкое, но высокое — весь фасад голым не бывает); широкие стены —
-// несколько колонок, как раньше.
-function scatterWindows(level, rnd){
-  const pts = [];
-  for (const s of level.solids){
-    const isCol = s.kind === "keep" || s.kind === "tower";
-    const w = s.x1 - s.x0, yTop = s.y1 + CAP.bottom, h = yTop - s.y0;
-    if (w < (isCol ? 0.9 : 2.6) || h < 2.1) continue;
-    const cols = isCol ? 1 : Math.max(1, Math.round(w / 1.15)), rows = Math.min(isCol ? 5 : 3, Math.max(1, Math.round((h - 1.3) / 1.35)));
-    for (let r = 0; r < rows; r++){
-      const y = yTop - 0.75 - r * 1.35;
-      if (y < s.y0 + 0.6) continue;
-      for (let c = 0; c < cols; c++){
-        if (rnd() < 0.3) continue;                                             // не все окна светятся
-        const x = s.x0 + (c + 0.5) * (w / cols) + (rnd() - 0.5) * 0.3 * (isCol ? 0 : 1);
-        // +0.05 перед лицом стены было НЕДОСТАТОЧНО: near/far камеры (0.5/1400, см. main.js) дают грубый
-        // буфер глубины на игровых дистанциях — точка иногда проигрывала z-тест плоской стене позади и
-        // пропадала целиком (отсюда «окна почти не видно» — не яркость, а то, что их не рисовало вовсе).
-        // 0.3 — запас того же порядка, что у искр-акценты ориентиров (landmarks.js), они не пропадают.
-        pts.push({ x, y, z: ZF + 0.3, phase: rnd() * 62.8, flick: rnd() < 0.35 });
-      }
-    }
-  }
-  return pts;
-}
 // передний слой (кусты/фонари/перила силуэтами) — редкие точки по нижнему краю и краям кадра, близко к
 // камере (z ≈ +6…+9); никогда не в полосе, где стоит Ризи по высоте — только у самой земли соседних ярусов
 function scatterForeground(level, rnd){
@@ -172,8 +147,13 @@ export function createLife(level, { night = false } = {}){
     bob: 0.4 + rnd() * 0.9, drift: (rnd() - 0.5) * 0.5,
   }));
   const shooters = Array.from({ length: nShoot }, (_, i) => ({ period: 6.5 + i * 3.3, dur: 0.55 + rnd() * 0.3, ph: rnd() * 20, lane: rnd() }));
-  const winPts = night ? scatterWindows(level, makeRng(4004)) : [];
-  const glowPts = landmarkGlowSpots(level, night);
+  const winPts = [];   // окна-арки теперь настоящие (стекло в аркадах walls.js), точки-окна больше не нужны
+  // ореолы фонарей на задней кромке ярусов (layout.js decorSpots, геометрия — walls.js lampPost):
+  // тёплые мягкие пятна, ночью крупнее и ярче
+  const lampGlows = decorSpots(level).filter(d => d.kind === "lamp").map(d => ({
+    x: d.x, y: d.y + LAMP.h - 0.12, z: LAMP.z + 0.35, color: night ? 0xffb86a : 0xffd9a0, size: night ? 0.62 : 0.4, lamp: true,
+  }));
+  const glowPts = [...landmarkGlowSpots(level, night), ...lampGlows];
   const fgPts = fgOn ? scatterForeground(level, makeRng(5005)) : [];
 
   const N = Math.max(1, saucers.length * (1 + SAUCER_LIGHTS.length) + ambient.length + shooters.length + winPts.length + glowPts.length + fgPts.length);
@@ -254,7 +234,7 @@ export function createLife(level, { night = false } = {}){
     // искры-акценты ориентиров — мягкий пульс
     for (const g of glowPts){
       pos[i * 3] = g.x; pos[i * 3 + 1] = g.y; pos[i * 3 + 2] = g.z;
-      const pulse = 0.75 + 0.25 * Math.sin(t * 1.6 + (g.x || 0));
+      const pulse = g.lamp ? 0.9 + 0.1 * Math.sin(t * 2.3 + g.x * 1.7) : 0.75 + 0.25 * Math.sin(t * 1.6 + (g.x || 0));
       _c.set(g.color).multiplyScalar(1 + 0.4 * pulse);
       col[i * 3] = _c.r; col[i * 3 + 1] = _c.g; col[i * 3 + 2] = _c.b;
       size[i] = (g.size || 0.2) * 1.3; alpha[i] = 0.8 * pulse + 0.2; shape[i] = 0; i++;
