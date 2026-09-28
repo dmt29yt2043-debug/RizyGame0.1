@@ -11,6 +11,7 @@ import * as THREE from "three";
 import { PAL } from "../config.js";
 import { Batch } from "./geo.js";
 import { creamTexture, creamTopTexture, makeRng } from "./tex.js";
+import { buildLandmarks } from "./landmarks.js";
 
 export const ZF = 1.0;      // лицевая плоскость стен
 export const ZB = -1.15;    // задняя кромка верха
@@ -23,6 +24,10 @@ export const DISC = { rz: 0.85, bowl: 0.78, bowlMover: 0.46 };
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const H = Math.PI / 2;
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _n = new THREE.Vector3(), _col = new THREE.Color();
+const _p = new THREE.Vector3(), _s = new THREE.Vector3(), _q0 = new THREE.Quaternion(), _m = new THREE.Matrix4();
+// ночная гамма стен — не серый бетон, а сливки в лунном свете (голубовато-кремовый); лунный кант —
+// холодная подсветка у самой верхней кромки (см. face()); NIGHT_TOP красит саму штукатурку холоднее.
+const NIGHT_TOP = 0xd8dcef, NIGHT_RIM = 0xe7edff;
 
 // ---------- низкоуровневые помощники: треугольники с явными нормалями прямо в Batch ----------
 function vtx(b, p, n, u, v, c){
@@ -119,15 +124,18 @@ function wallCap(B, xa, xb, y1, zf, zb, endL, endR, tint = CAP_COLORS){
 
 // лицо стены: штукатурка; fan > 0 — нормали «веером» поперёк (колонна читается круглой).
 // Вертикальный градиент вершинных цветов: мягкая тень под карнизом и уход в лавандовую дымку книзу.
-function face(b, x0, x1, ya, yb, z, fan, tint = 0xffffff){
+// rimColor — «лунный кант»: холодная подсветка узкой полосой у самой верхней кромки (ночь, см. buildWalls).
+function face(b, x0, x1, ya, yb, z, fan, tint = 0xffffff, rimColor = null){
   const n = fan ? 10 : 1;
   const topY = yb, rows = [ya];
   for (const d of [7.5, 4, 1.6, 0.45]) if (topY - d > ya) rows.push(topY - d);
   rows.push(yb);
+  const rimC = rimColor ? new THREE.Color(rimColor) : null;
   const shade = y => {
     const under = Math.max(0, Math.min(1, (topY - y) / 0.45));                // 0 под самым карнизом
     const deep = Math.max(0, Math.min(1, (topY - y - 1.6) / 6));              // 0..1 вглубь, книзу
-    const c = new THREE.Color(tint).multiplyScalar(0.8 + 0.2 * under);
+    let c = new THREE.Color(tint).multiplyScalar(0.8 + 0.2 * under);
+    if (rimC) c = c.lerp(rimC, under * under * 0.7);
     return c.lerp(new THREE.Color(0xd8c9e4), deep * 0.55);
   };
   for (let r = 0; r < rows.length - 1; r++){
@@ -149,6 +157,44 @@ function face(b, x0, x1, ya, yb, z, fan, tint = 0xffffff){
   }
 }
 
+// ---------- разнообразие фасадов (день): неглубокие ниши + декоративные «кронштейны» под карнизом на
+// широких пролётах — чтобы стены не повторялись одинаково (см. review). Сливается в существующие батчи
+// (B.deco/B.gold) — 0 новых draw call'ов. Свой ГСЧ на стену — детерминировано, но не одинаково.
+function dayFacade(B, s, yFace, rnd){
+  const { x0, x1, y0 } = s, w = x1 - x0;
+  if (w < 3.4) return;
+  const nNiche = w > 8.5 ? 2 : 1;
+  for (let k = 0; k < nNiche; k++){
+    const nw = Math.min(1.5, w * 0.2), nh = 1.5 + rnd() * 0.9;
+    const cx = x0 + w * (0.2 + 0.6 * (k + 0.5) / nNiche);
+    const by = Math.max(y0 + 0.5, yFace - 1.3 - rnd() * 1.7);
+    B.deco.quad(V(cx - nw / 2, by, ZF + 0.012), V(cx + nw / 2, by, ZF + 0.012),
+      V(cx + nw / 2, by + nh, ZF + 0.012), V(cx - nw / 2, by + nh, ZF + 0.012), null, 0xcabbd6);
+  }
+  if (w > 5.2 && rnd() < 0.65){
+    const count = Math.max(3, Math.round(w / 0.85));
+    for (let i = 0; i < count; i++){
+      const bx = x0 + 0.55 + i * (w - 1.1) / Math.max(1, count - 1);
+      const g = new THREE.CylinderGeometry(0.045, 0.058, 0.92, 8);
+      B.gold.add(g, new THREE.Matrix4().makeTranslation(bx, yFace - 0.56, ZF + CAP.front - 0.05), PAL.gold); g.dispose();
+      const bd = new THREE.SphereGeometry(0.07, 8, 6);
+      B.gold.add(bd, new THREE.Matrix4().makeTranslation(bx, yFace - 0.09, ZF + CAP.front - 0.05), PAL.gold); bd.dispose();
+    }
+  }
+}
+// ---------- ночь: золотой пояс-рельеф на высоких стенах — плиты перестают быть голыми серыми плитами ----------
+function nightBelt(B, s, yFace, rnd){
+  const { x0, x1, y0 } = s, w = x1 - x0, h = yFace - y0;
+  if (w < 3.4 || h < 3) return;
+  const by = y0 + h * (0.34 + 0.12 * rnd());
+  B.gold.quad(V(x0 + 0.1, by, ZF + 0.01), V(x1 - 0.1, by, ZF + 0.01), V(x1 - 0.1, by + 0.16, ZF + 0.01), V(x0 + 0.1, by + 0.16, ZF + 0.01), null, PAL.gold);
+  B.body.quad(V(x0 + 0.1, by - 0.22, ZF + 0.006), V(x1 - 0.1, by - 0.22, ZF + 0.006), V(x1 - 0.1, by, ZF + 0.006), V(x0 + 0.1, by, ZF + 0.006), null, 0xb6b8d6);
+}
+
+// уровень «ночной» ли — определяем по данным уровня, не по отдельному флагу (level2.js — единственный
+// уровень с лианами для лазания), чтобы не трогать main.js/сигнатуру buildWalls() ради одного bool
+function levelIsNight(level){ return !!(level.vines && level.vines.length); }
+
 export function buildWalls(level, renderer){
   const group = new THREE.Group(); group.name = "walls";
   const B = { body: new Batch(), top: new Batch(), gold: new Batch(), chrome: new Batch(), deco: new Batch() };
@@ -156,6 +202,8 @@ export function buildWalls(level, renderer){
   const eps = 1e-3;
   const neighbor = (x, side) => S.find(o => side < 0 ? Math.abs(o.x1 - x) < eps : Math.abs(o.x0 - x) < eps);
   const OV = 0.12;          // вынос карниза за торец, если сосед ниже
+  const isNight = levelIsNight(level);
+  const rndFacade = makeRng(2027);
 
   for (const s of S){
     const { x0, x1, y0, y1 } = s;
@@ -163,7 +211,8 @@ export function buildWalls(level, renderer){
     const nL = neighbor(x0, -1), nR = neighbor(x1, 1);
     const yFace = y1 + CAP.bottom;               // верх штукатурки лица (под хромовой чашей)
 
-    face(B.body, x0, x1, y0, yFace, ZF, col ? 0.85 : 0);
+    face(B.body, x0, x1, y0, yFace, ZF, col ? 0.85 : 0, isNight ? NIGHT_TOP : 0xffffff, isNight ? NIGHT_RIM : null);
+    if (!col){ if (isNight) nightBelt(B, s, yFace, rndFacade); else dayFacade(B, s, yFace, rndFacade); }
     // бока (видны в перспективе в разрывах пути); низ бока прячется за соседом
     for (const side of [-1, 1]){
       const x = side < 0 ? x0 : x1, n = side < 0 ? nL : nR;
@@ -185,6 +234,8 @@ export function buildWalls(level, renderer){
   // направляющие штанги лифтов — тоже статичное золото
   for (const m of level.movers) if (m.ay) railGuides(B.gold, m);
   backdropPits(level, B);
+  // ориентиры-«открытки» участков (landmarks.js) — тоже сливаются в B.top/gold/chrome, 0 новых draw call'ов
+  buildLandmarks(level, isNight, B);
 
   // envMapIntensity разный: матовым сливкам — лёгкий намёк на небо (иначе отражение выбеливает
   // штукатурку), золоту/хрому — полная сила (для них отражение и есть материал)
@@ -202,19 +253,29 @@ export function buildWalls(level, renderer){
   mk(B.deco, decoMat, "wall-deco");
 
   // ---------- движущиеся платформы: плита + золотой обод + хромовая чаша + фиолетовое свечение снизу ----------
+  // Инстансинг: раньше 4 отдельных меша НА КАЖДУЮ платформу (draw calls росли с числом лифтов/челноков —
+  // на уровне 1 их два, это было 8 draw call'ов); теперь протипип строится один раз при «единичной» ширине
+  // unitW = 2*DISC.rz (внутренний масштаб x получается 1 — см. discPlatform/moverGlow), а у каждой
+  // платформы — свой instanceMatrix (позиция + масштаб x = реальная_ширина/unitW). Итого 4 draw call'а
+  // на ВСЕ движущиеся платформы уровня, а не 4×N.
   const glowMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false, side: THREE.DoubleSide });
-  const moverMeshes = [];
-  for (const m of level.movers){
-    const g = new THREE.Group(); g.name = "mover-" + m.id;
-    const w = m.x1 - m.x0;
-    const tb = new Batch(), gb = new Batch(), cb = new Batch(), lb = new Batch();
-    discPlatform(tb, gb, cb, w / 2, 0, w, DISC.bowlMover);
-    moverGlow(lb, w / 2, w);
-    const glow = new THREE.Mesh(lb.build(), glowMat); glow.renderOrder = 4;
-    g.add(new THREE.Mesh(tb.build(), topMat), new THREE.Mesh(gb.build(), goldMat), new THREE.Mesh(cb.build(), chromeMat), glow);
-    group.add(g);
-    moverMeshes.push({ mesh: g, m, glow });
-  }
+  const nMovers = Math.max(1, level.movers.length);
+  const unitW = DISC.rz * 2;
+  const utb = new Batch(), ugb = new Batch(), ucb = new Batch(), ulb = new Batch();
+  discPlatform(utb, ugb, ucb, 0, 0, unitW, DISC.bowlMover);
+  moverGlow(ulb, 0, unitW);
+  const moverTop = new THREE.InstancedMesh(utb.build(), topMat, nMovers);
+  const moverGold = new THREE.InstancedMesh(ugb.build(), goldMat, nMovers);
+  const moverChrome = new THREE.InstancedMesh(ucb.build(), chromeMat, nMovers);
+  const moverGlowMesh = new THREE.InstancedMesh(ulb.build(), glowMat, nMovers);
+  for (const mm of [moverTop, moverGold, moverChrome, moverGlowMesh]) mm.frustumCulled = false;
+  moverGlowMesh.renderOrder = 4;
+  moverTop.name = "mover-top"; moverGold.name = "mover-gold"; moverChrome.name = "mover-chrome"; moverGlowMesh.name = "mover-glow";
+  group.add(moverTop, moverGold, moverChrome, moverGlowMesh);
+  // пустые платформы (нет движущихся) не рендерятся — масштаб 0 прячет единственный «пустой» инстанс
+  if (!level.movers.length){ _m.makeScale(0, 0, 0); for (const mm of [moverTop, moverGold, moverChrome, moverGlowMesh]) mm.setMatrixAt(0, _m); }
+  const moverMeshes = { top: moverTop, gold: moverGold, chrome: moverChrome, glow: moverGlowMesh,
+    items: level.movers.map((m, i) => ({ i, sx: (m.x1 - m.x0) / unitW })) };
   return { group, moverMeshes };
 }
 
@@ -357,10 +418,21 @@ function backdropPits(level, B){
   }
 }
 
-// движущиеся платформы: сдвиг мешей по позициям из физики (с интерполяцией)
+// движущиеся платформы: сдвиг инстансов по позициям из физики (с интерполяцией). Прототип каждой детали
+// построен центрированным на x=0 (см. buildWalls) — мировая позиция инстанса берётся по ЦЕНТРУ платформы
+// (не по левому краю x0, как раньше для Group), масштаб x = it.sx фиксирован (ширина не меняется в игре).
 export function placeMovers(moverMeshes, world, alpha){
-  for (let i = 0; i < moverMeshes.length; i++){
-    const pl = world.movers[i], mm = moverMeshes[i];
-    mm.mesh.position.set(pl.x0 - pl.dx * (1 - alpha), pl.y - pl.dy * (1 - alpha), 0);
+  const { top, gold, chrome, glow, items } = moverMeshes;
+  for (const it of items){
+    const pl = world.movers[it.i];
+    const cx = pl.x0 - pl.dx * (1 - alpha) + (pl.x1 - pl.x0) / 2;
+    const cy = pl.y - pl.dy * (1 - alpha);
+    _p.set(cx, cy, 0); _s.set(it.sx, 1, 1);
+    _m.compose(_p, _q0, _s);
+    top.setMatrixAt(it.i, _m); gold.setMatrixAt(it.i, _m); chrome.setMatrixAt(it.i, _m); glow.setMatrixAt(it.i, _m);
+  }
+  if (items.length){
+    top.instanceMatrix.needsUpdate = true; gold.instanceMatrix.needsUpdate = true;
+    chrome.instanceMatrix.needsUpdate = true; glow.instanceMatrix.needsUpdate = true;
   }
 }

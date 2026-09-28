@@ -37,6 +37,24 @@ const DT = PHYS.dt;
 const $ = id => document.getElementById(id);
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const damp = (a, b, k, dt) => a + (b - a) * (1 - Math.exp(-k * dt));
+// отрезок (x0,y0)-(x1,y1) пересекает прямоугольник r{x0,x1,y0,y1}? (Liang–Barsky) — магнит кристаллов
+// не должен тянуть сквозь стену: проверяем прямую видимость между кристаллом и Ризи по world.solids.
+function segRectHit(x0, y0, x1, y1, r){
+  const dx = x1 - x0, dy = y1 - y0;
+  let tmin = 0, tmax = 1;
+  const edges = [[-dx, x0 - r.x0], [dx, r.x1 - x0], [-dy, y0 - r.y0], [dy, r.y1 - y0]];
+  for (const [p, q] of edges){
+    if (Math.abs(p) < 1e-9){ if (q < 0) return false; continue; }
+    const t = q / p;
+    if (p < 0){ if (t > tmax) return false; if (t > tmin) tmin = t; }
+    else { if (t < tmin) return false; if (t < tmax) tmax = t; }
+  }
+  return true;
+}
+function wallBetween(x0, y0, x1, y1){
+  for (const r of world.solids) if (segRectHit(x0, y0, x1, y1, r)) return true;
+  return false;
+}
 if (qp.get("hideui") === "1") document.body.classList.add("hideui");
 
 // шрифт нужен табличкам в мире (рисуются в canvas) — ждём, но не дольше 1.5 с
@@ -83,7 +101,7 @@ scene.add(ghosts.group);
 let ghostT = 0, ghostPending = false;
 let rizy = createRizy({ quality: QNAME });
 scene.add(rizy.root);
-if (QC.shadows) rizy.root.traverse(o => { if (o.isMesh) o.castShadow = true; });
+if (QC.shadows) rizy.root.traverse(o => { if (o.isMesh && !o.userData.noShadow) o.castShadow = true; });   // мелочи лица модель помечает noShadow
 let post = QC.post ? createPost(renderer, scene, camera, { bloom: QC.bloom, samples: 4, dof: !!QC.dof }) : null;
 
 // ---------- ПЕРЕСБОРКА МИРА ПРИ СМЕНЕ УРОВНЯ ----------
@@ -129,7 +147,7 @@ async function buildLevel(def){
   const crystals = createCrystals(level, { glowTex, env: envTex, halos: QC.halos, bloom: bloomOn });
   const heart = createHeart(level, heartGround, { glowTex, env: envTex, bloom: bloomOn, ...def.look.heart });
   const enemies = createEnemies(level, { feltTex, glowTex, bloom: bloomOn });
-  if (QC.shadows) enemies.group.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  // Гасители тень-карту не отбрасывают: под ними мягкое пятно-тень (blobs), а тень-проход удваивал их draw calls
   const torches = createTorches(level, torchGround, { glowTex, bloom: bloomOn });
   const signsGroup = createSigns(level, signGround, renderer);
   const blobs = createBlobs(1 + level.enemies.length, blobTex);
@@ -212,7 +230,7 @@ function applyQuality(qname){
   const oldRoot = rizy.root; const oldRizy = rizy;
   rizy = createRizy({ quality: QNAME });
   scene.add(rizy.root);
-  if (QC.shadows) rizy.root.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  if (QC.shadows) rizy.root.traverse(o => { if (o.isMesh && !o.userData.noShadow) o.castShadow = true; });   // мелочи лица модель помечает noShadow
   scene.remove(oldRoot); oldRizy.dispose();
   hud.setQuality(QNAME);
 }
@@ -239,6 +257,10 @@ let player = createPlayer(0, 0);
 const inp = { left: false, right: false, up: false, down: false, jump: false, jumpPressed: false, dashPressed: false };
 const stepEv = [];
 const frameEv = [];
+// магнит кристаллов: по одной записи на кристалл уровня — { t0 } (время мира в момент захвата) или null;
+// пересобирается под размер LEVEL.crystals при каждой загрузке/рестарте уровня (см. resetGameStateForLevel/restartLevel)
+let magnetState = [];
+let vineStepCD = 0;               // тихий звук «шага» на лиане — не чаще, чем раз в ~0.33 с (см. simStep)
 
 const bestText = b => b ? `Лучшее: ${fmtTime(b.time)} · кристаллы ${b.crystals}/${LEVEL.crystals.length} · звёздные ${b.stars}/${LEVEL.stars.length}` : "";
 
@@ -366,6 +388,7 @@ function respawn(penalty){
   cam.snap = true;
   fx.clear(); ghosts.clear();
   frameEv.length = 0;
+  for (let i = 0; i < magnetState.length; i++) magnetState[i] = null;   // отпускаем незавершённый полёт кристалла
 }
 function continueFromCheckpoint(){
   G.mode = "play"; G.hearts = GAME.hearts; G.dying = 0;
@@ -378,6 +401,7 @@ function resetGameStateForLevel(){
   G.hearts = GAME.hearts; G.crystals = 0; G.stars = LEVEL.stars.map(() => false);
   G.playT = 0; G.combo = 0; G.lastCrystalT = -9; G.section = -1; G.record = false; G.time = 0;
   G.checkpoint = { x: LEVEL.start.x, y: LEVEL.start.y, idx: 0 };
+  magnetState = LEVEL.crystals.map(() => null);
   resetPlayerAt(LEVEL.start.x, LEVEL.start.y);
   G.fadeT = GAME.respawnFade; cam.snap = true;
   fx.clear(); ghosts.clear();
@@ -387,6 +411,7 @@ function restartLevel(){
   G.hearts = GAME.hearts; G.crystals = 0; G.stars = LEVEL.stars.map(() => false);
   G.playT = 0; G.combo = 0; G.lastCrystalT = -9; G.section = -1; G.record = false;
   G.checkpoint = { x: LEVEL.start.x, y: LEVEL.start.y, idx: 0 };
+  magnetState = LEVEL.crystals.map(() => null);
   crystals.reset(); enemies.reset(); torches.reset(); heart.reset();
   resetPlayerAt(LEVEL.start.x, LEVEL.start.y);
   G.fadeT = GAME.respawnFade; cam.snap = true;
@@ -426,6 +451,11 @@ function simStep(dt){
     stepEv.length = 0;
     stepPlayer(p, inp, dt, world, stepEv);
     for (const e of stepEv) onPlayerEvent(e);
+    // тихий «шаг» подъёма/спуска по лиане — не чаще 3/с, только пока реально едет (не просто висит)
+    if (playing && p.climbing && Math.abs(p.climbV) > 0.05){
+      vineStepCD -= dt;
+      if (vineStepCD <= 0){ audio.play("vinestep"); vineStepCD = 1 / 3; }
+    } else if (!p.climbing) vineStepCD = 0;
     if (playing) interactions();
     else if (p.y < PHYS.killY) { p.y = PHYS.killY; p.vy = 0; }
     if (G.won){ G.winT -= dt; if (G.winT <= 0 && G.mode === "play") showWin(); }
@@ -452,29 +482,40 @@ function onPlayerEvent(e){
     const hard = Math.min(1, Math.max(0, -(p.landVy || 0)) / 16);
     if (p.airT > 0.12 || fall > 0.4){ audio.play("land"); fx.dust(p.x, p.y, 6 + Math.round(hard * 8), 1 + hard); }
   }
+  else if (e === "vgrab") audio.play("vinegrab");
 }
 
 function interactions(){
   const p = player;
   const hw = PHYS.w * 0.5;
-  // кристаллы
+  // кристаллы: касание — подбор сразу; иначе в радиусе магнита (и без стены между) кристалл срывается
+  // и летит к центру Ризи GAME.magnetT секунд (magnetState[i].t0 — момент отрыва), долетев — подбирается
+  // по-настоящему на текущей позиции Ризи (см. collectCrystal). Видимый полёт — crystals.setPos в updateVisuals.
+  const rizyCx = p.x, rizyCy = p.y + PHYS.h * 0.5;
   for (let i = 0; i < LEVEL.crystals.length; i++){
     const s = crystals.state[i]; if (s.got) continue;
     const c = LEVEL.crystals[i];
-    if (Math.abs(c.x - p.x) < hw + 0.3 && c.y > p.y - 0.3 && c.y < p.y + PHYS.h + 0.3) collectCrystal(i);
+    if (magnetState[i]){
+      if (G.time - magnetState[i].t0 >= GAME.magnetT) collectCrystal(i, rizyCx, rizyCy);
+      continue;
+    }
+    if (Math.abs(c.x - p.x) < hw + 0.3 && c.y > p.y - 0.3 && c.y < p.y + PHYS.h + 0.3){ collectCrystal(i); continue; }
+    if (Math.hypot(c.x - rizyCx, c.y - rizyCy) < GAME.magnetR && !wallBetween(c.x, c.y, rizyCx, rizyCy)) magnetState[i] = { t0: G.time };
   }
   for (let i = 0; i < LEVEL.stars.length; i++){
     const s = crystals.sstate[i]; if (s.got) continue;
     const c = LEVEL.stars[i];
     if (Math.abs(c.x - p.x) < hw + 0.55 && c.y > p.y - 0.55 && c.y < p.y + PHYS.h + 0.55) collectStar(i);
   }
-  // Гасители
+  // Гасители: прыжок сверху гасит как раньше; касание во время рывка — тоже гашение (без урона, лёгкий
+  // отскок назад-вверх вместо подброса стомпа); иначе, вне неуязвимости — урон
   for (let i = 0; i < LEVEL.enemies.length; i++){
     const st = enemies.state[i]; if (!st.alive) continue;
     const e = enemyPos(LEVEL.enemies[i], G.time);
     const r = ENEMY_R;
     if (Math.abs(e.x - p.x) < hw + r * 0.85 && e.y + r * 0.85 > p.y && e.y - r * 0.85 < p.y + PHYS.h){
       if (p.vy < 0 && p.py >= e.y - 0.05 && p.dashT <= 0 && !p.climbing) stomp(i, e);
+      else if (p.dashT > 0) dashKill(i, e);
       else if (p.invuln <= 0) hurt(e.x);
     }
   }
@@ -497,14 +538,17 @@ function interactions(){
   if (p.y < PHYS.killY) fall();
 }
 
-function collectCrystal(i){
+// atX/atY — где на самом деле сейчас кристалл (после полёта магнита к Ризи); без них — статичная позиция
+// уровня (обычный подбор на лету). magnetState[i] снимается здесь же, если он был.
+function collectCrystal(i, atX, atY){
   const c = LEVEL.crystals[i], s = crystals.state[i];
   s.got = true; s.t = G.time;
+  magnetState[i] = null;
   G.crystals++;
   G.combo = (G.time - G.lastCrystalT < GAME.comboWindow) ? G.combo + 1 : 0;
   G.lastCrystalT = G.time;
   audio.play("crystal", G.combo);
-  fx.burst(c.x, c.y, [0x3fe6d4, 0x5cb6ff, 0xff86cf][c.c % 3], 12);
+  fx.burst(atX ?? c.x, atY ?? c.y, [0x3fe6d4, 0x5cb6ff, 0xff86cf][c.c % 3], 12);
   frameEv.push("collect");
 }
 function collectStar(i){
@@ -528,6 +572,19 @@ function stomp(i, e){
   fx.felt(e.x, e.y);
   frameEv.push("jump");
   G.hitstop = 0.045; G.shake = Math.max(G.shake, 0.16);
+}
+// рывок сквозь Гасителя: тот же исход, что stomp (исчезновение/звук/заморозка кадра), но без урона Ризи
+// и без подброса — рывок гасится, лёгкий отскок назад-вверх вместо продолжения полёта сквозь врага
+function dashKill(i, e){
+  const p = player, st = enemies.state[i];
+  st.alive = false; st.deadT = G.time; st.x = e.x; st.y = e.y;
+  const dashDir = p.dashDir || p.facing || 1;
+  p.dashT = 0; p.dashCD = PHYS.dashCD;
+  p.vx = -dashDir * PHYS.dashKillBounceX; p.vy = PHYS.dashKillBounceY;
+  p.jumping = false; p.canDouble = true; p.airDash = true; p.grounded = false; p.ground = null;
+  audio.play("stomp");
+  fx.felt(e.x, e.y);
+  G.hitstop = 0.05; G.shake = Math.max(G.shake, 0.16);
 }
 function hurt(fromX){
   const p = player;
@@ -574,12 +631,27 @@ function showWin(){
 }
 
 // ---------- КАМЕРА ----------
-const cam = { x: 0, y: 0, ty: 0, lead: CAM.lead * 0.6, snap: true };
+// dist — динамическая дистанция камеры: базовая (CAM.dist, Ризи ≥15% высоты кадра в покое), с плавным
+// отъездом до CAM.distFar (~0.4-0.6с) на лиане, в быстром падении/прыжке (|vy| > CAM.fallVy) и в рывке —
+// это покрывает почти все прыжки через большие разрывы (набор высокой |vy| перед отрывом/на спуске);
+// необязательные level.camZones: [{x0,x1,dist}] — точечный больший отъезд для конкретных обязательных
+// переходов, если общей логики не хватает (см. docs/plan.md, пункт «камера ближе и умнее»).
+const cam = { x: 0, y: 0, ty: 0, dist: CAM.dist, lead: CAM.lead * 0.6, snap: true };
+function camTargetDist(px){
+  let d = CAM.dist;
+  const zones = LEVEL.camZones;
+  if (zones) for (const z of zones) if (px >= z.x0 && px <= z.x1) d = Math.max(d, z.dist);
+  const p = player;
+  if (p.climbing || p.dashT > 0 || Math.abs(p.vy) > CAM.fallVy) d = Math.max(d, CAM.distFar);
+  return d;
+}
 function updateCamera(dt, px, py){
   const p = player;
   const moving = Math.abs(p.vx) > 0.6;
   cam.lead = damp(cam.lead, p.facing * CAM.lead * (moving ? 1 : 0.55), CAM.leadRate, dt);
-  const half = CAM.dist * Math.tan(THREE.MathUtils.degToRad(CAM.fov / 2)) * camera.aspect;
+  const targetDist = camTargetDist(px);
+  cam.dist = cam.snap ? targetDist : damp(cam.dist, targetDist, CAM.zoomRate, dt);
+  const half = cam.dist * Math.tan(THREE.MathUtils.degToRad(CAM.fov / 2)) * camera.aspect;
   // на титуле кадр смещён: героиня слева, карточка справа
   const titleShift = G.mode === "title" && innerWidth >= 900 ? half * 0.42 : 0;
   const tx = clamp(px + cam.lead + titleShift, LEVEL.minX + half - 4.5, LEVEL.maxX - half + 4.5);
@@ -594,7 +666,7 @@ function updateCamera(dt, px, py){
   G.shake = Math.max(0, G.shake - dt * 1.6);
   const s = G.shake * G.shake * 2.2;
   const sx = s * Math.sin(G.time * 71), sy = s * Math.sin(G.time * 59 + 1.3);
-  camera.position.set(cam.x + sx, cam.y + CAM.height + sy, CAM.dist);
+  camera.position.set(cam.x + sx, cam.y + CAM.height + sy, cam.dist);
   camera.lookAt(cam.x + sx * 0.5, cam.y + CAM.lookUp + sy * 0.5, 0);
   // свет и тень следуют за кадром
   sun.target.position.set(cam.x, cam.y, 0);
@@ -616,6 +688,17 @@ function updateVisuals(dt, alpha){
   rizy.update(dt, { speed: Math.min(1, Math.abs(p.vx) / PHYS.maxRun), vy: p.vy, grounded: p.grounded, facing: p.facing, dashing: p.dashT > 0, event: ev, time: G.time, climbing: p.climbing, climbV: p.climbV });
 
   placeMovers(walls.moverMeshes, world, alpha);
+  // магнит: видимый перелёт притянутых кристаллов к текущему центру Ризи (ease-out, GAME.magnetT секунд).
+  // crystals.setPos — задел под src/look/crystals.js (агент «Картинка мира»): если метода ещё нет, вызов
+  // тихо ничего не делает — кристалл просто подберётся в момент истечения таймера, без анимации полёта.
+  const magCx = px, magCy = py + PHYS.h * 0.5;
+  for (let i = 0; i < magnetState.length; i++){
+    const m = magnetState[i]; if (!m) continue;
+    const c = LEVEL.crystals[i];
+    const k = Math.min(1, (G.time - m.t0) / GAME.magnetT);
+    const ek = 1 - (1 - k) * (1 - k);
+    crystals.setPos?.(i, c.x + (magCx - c.x) * ek, c.y + (magCy - c.y) * ek);
+  }
   crystals.update(G.time);
   heart.update(G.time);
   torches.update(G.time);

@@ -50,6 +50,15 @@
   ok("потеря фокуса окна — автопауза", G.paused === false || G.paused === true);   // в фоторежиме автопауза отключена
   P.pause(false);
 
+  // ---------- камера: Ризи (рост 1.5) ≥15% высоты кадра в покое ----------
+  {
+    home(30); P.step(0.3);
+    const dist = P.camera.position.z, fovRad = P.camera.fov * Math.PI / 180;
+    const visH = 2 * dist * Math.tan(fovRad / 2);
+    const ratio = 1.5 / visH;
+    ok("камера: Ризи ≥15% высоты кадра в покое", ratio >= 0.15, { dist: +dist.toFixed(2), ratioPct: +(ratio * 100).toFixed(1) });
+  }
+
   // ---------- бег и прыжок ----------
   home(-4);
   let xa = P.player.x;
@@ -129,6 +138,58 @@
   ok("касание сбоку — минус сердце", G.hearts === hb - 1, { hearts: G.hearts });
   ok("после удара — неуязвимость ~1 с", P.player.invuln > 0.6, { invuln: +P.player.invuln.toFixed(2) });
   P.step(1.2);
+
+  // ---------- рывок гасит Гасителя без урона (как stomp, но без прыжка сверху) ----------
+  {
+    const e2i = E.findIndex(e => e.id === "e2");
+    P.enemies[e2i].alive = true; P.enemies[e2i].deadT = -9;
+    home(97); P.step(0.01);
+    const e2 = E[e2i];
+    const w = (G.time / e2.T) * Math.PI * 2;
+    const ex = e2.x + e2.ax * Math.sin(w), ey = e2.y + e2.ay * Math.sin(w * 2);
+    P.player.x = P.player.px = ex - 1.0; P.player.y = P.player.py = ey;
+    P.player.vx = 0; P.player.vy = 0; P.player.grounded = false; P.player.ground = null;
+    P.player.airDash = true; P.player.dashCD = 0; P.player.dashT = 0; P.player.facing = 1;
+    const hb2 = G.hearts;
+    tap("ShiftLeft", "Shift");
+    until(() => !P.enemies[e2i].alive, 0.4);
+    ok("рывок в Гасителя гасит его (не только прыжок сверху)", !P.enemies[e2i].alive, { alive: P.enemies[e2i].alive });
+    ok("гашение рывком не отнимает сердце", G.hearts === hb2, { hearts: G.hearts, hb2 });
+    ok("гашение рывком — рывок гасится, лёгкий отскок назад-вверх (не подброс stomp)",
+      P.player.vy > 3 && P.player.vx < -1 && P.player.dashT === 0,
+      { vy: +P.player.vy.toFixed(2), vx: +P.player.vx.toFixed(2), dashT: P.player.dashT });
+    P.step(0.8);
+  }
+
+  // ---------- магнит кристаллов: собирает в радиусе (не только касанием), не сквозь стену ----------
+  {
+    const LC = P.level.crystals;
+    const ci = LC.findIndex(c => Math.abs(c.x - 149.5) < 0.05 && Math.abs(c.y - 2.35) < 0.05);   // дорожка площадки s11
+    ok("нашли кристалл площадки s11 для проверки магнита", ci >= 0, { ci });
+    P.crystals[ci].got = false;
+    home(146); P.step(0.01);
+    // 0.9 ед. по прямой до ЦЕНТРА Ризи (p.y + h/2, h=1.4 → +0.7): в радиусе магнита (1.1), но вне
+    // зоны обычного касания (порог ~0.61 по x) — должна притянуться и подобраться сама, не мгновенно
+    P.player.x = P.player.px = 149.5 - 0.9; P.player.y = P.player.py = 2.35 - 0.7;
+    P.player.vx = 0; P.player.vy = 0; P.player.grounded = true; P.player.ground = null;
+    const c0 = G.crystals;
+    until(() => P.crystals[ci].got, 0.35);
+    ok("магнит притягивает кристалл в радиусе и подбирает его", P.crystals[ci].got && G.crystals === c0 + 1,
+      { got: P.crystals[ci].got, dCrystals: G.crystals - c0 });
+
+    // не сквозь стену: в самом уровне коридоры шире радиуса магнита (1.1 ед.), поэтому «кристалл
+    // впритык к стене» строим синтетически — переносим тот же кристалл за твёрдый блок s3 (x 31…36)
+    // от открытой площадки перед ним, на том же расстоянии (1.0 ед.), что сработало выше без стены
+    const savedX = LC[ci].x, savedY = LC[ci].y;
+    P.crystals[ci].got = false;
+    LC[ci].x = 31.5; LC[ci].y = 1.7;                // за стеной s3, на высоте центра стоящей на s2 Ризи
+    home(28); P.step(0.01);
+    P.player.x = P.player.px = 30.5; P.player.y = P.player.py = 1.0;   // ровно на s2 (валидная опора, не «в стене»)
+    P.player.vx = 0; P.player.vy = 0; P.player.grounded = true; P.player.ground = null;
+    P.step(0.4);
+    ok("магнит НЕ тянет кристалл сквозь стену", !P.crystals[ci].got, { got: P.crystals[ci].got });
+    LC[ci].x = savedX; LC[ci].y = savedY; P.crystals[ci].got = false;
+  }
 
   // ---------- пропасть, чекпоинт, R ----------
   P.enemies[E.findIndex(e => e.id === "e5")].alive = false;      // патрульный у края не мешает проверке пропасти
@@ -240,6 +301,12 @@
   key("keydown", "ArrowUp", "ArrowUp"); P.step(0.5); key("keyup", "ArrowUp", "ArrowUp"); P.step(0.03);
   const climbUpDy = P.player.y - vy0;
   ok("подъём по лиане: ↑ ≈3.5 ед/с", P.player.climbing && climbUpDy > 1.5 && climbUpDy < 1.95, { dy: +climbUpDy.toFixed(2) });
+
+  // камера отъезжает во время лазания (плавно, к CAM.distFar — за ~0.53 с климба должна заметно отъехать)
+  {
+    const distClimb = P.camera.position.z;
+    ok("камера отъезжает на лиане", distClimb > 19, { dist: +distClimb.toFixed(2) });
+  }
 
   // спуск по ↓
   vy0 = P.player.y;

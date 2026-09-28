@@ -3,7 +3,7 @@
 import * as THREE from "three";
 import { PAL } from "../config.js";
 import { Batch } from "./geo.js";
-import { signTexture } from "./tex.js";
+import { signAtlasTexture } from "./tex.js";
 
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _s = new THREE.Vector3(), _e = new THREE.Euler();
 
@@ -74,15 +74,27 @@ export function createTorches(level, grounds, { glowTex, bloom = true }){
 }
 
 // ---------- ТАБЛИЧКИ ----------
+// Все таблички уровня — один merged-меш на общем текстурном атласе (одна ячейка на табличку, см.
+// tex.js signAtlasTexture): было N draw call'ов (по мешу на табличку с собственной текстурой), стало 1 —
+// бюджет ≤150 draw calls на уровень тесный, а новые «живые» слои пакета 1 тоже просят своих draw call'ов.
 export function createSigns(level, grounds, renderer){
   const group = new THREE.Group(); group.name = "signs";
+  const N = level.signs.length;
+  if (!N) return group;
+  const { texture, W, H } = signAtlasTexture(level.signs, renderer);
+  const aspect = W / H;
+  const b = new Batch();
+  const V = (x, y, z) => new THREE.Vector3(x, y, z);
   level.signs.forEach((sg, i) => {
-    const { texture, aspect } = signTexture(sg.lines, renderer);
-    const h = 1.45, w = h * aspect;
-    const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: texture, transparent: true, alphaTest: 0.02, toneMapped: false }));
-    mesh.position.set(sg.x, grounds[i] + h / 2 - 0.02, -0.8);
-    group.add(mesh);
+    const h = 1.45, w = h * aspect, cx = sg.x, cy = grounds[i] + h / 2 - 0.02, z = -0.8;
+    // ячейка i в атласе (сверху вниз) → v-диапазон в текстуре (canvas Y=0 — верх = v=1, см. CanvasTexture flipY)
+    const vTop = 1 - i / N, vBot = 1 - (i + 1) / N;
+    b.quad(V(cx - w / 2, cy - h / 2, z), V(cx + w / 2, cy - h / 2, z), V(cx + w / 2, cy + h / 2, z), V(cx - w / 2, cy + h / 2, z),
+      [[0, vBot], [1, vBot], [1, vTop], [0, vTop]], 0xffffff);
   });
+  const mesh = new THREE.Mesh(b.build(), new THREE.MeshBasicMaterial({ map: texture, transparent: true, alphaTest: 0.02, toneMapped: false }));
+  mesh.name = "signs"; mesh.matrixAutoUpdate = false; mesh.updateMatrix();
+  group.add(mesh);
   return group;
 }
 

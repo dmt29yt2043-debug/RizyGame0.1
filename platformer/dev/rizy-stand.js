@@ -1,4 +1,5 @@
-// Стенд Ризи-игрушки: ?sheet=turn (фас/3-4/профиль/спина) | poses (игровые позы, вид сбоку) | face (крупно) [&q=low|med|high]
+// Стенд Ризи-игрушки: ?sheet=turn (фас/3-4/профиль/спина) | poses (игровые позы, вид сбоку) | face (крупно)
+//   | emotions (лист всех эмоций лицом крупно, для сверки с референс-листом) [&q=low|med|high]
 import * as THREE from "three";
 import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
 import { createRizyToy } from "../src/rizy-toy.js";
@@ -65,6 +66,26 @@ if (sheet === "poses"){
 } else if (sheet === "face"){
   views = place([{ yaw: 0, face: true }, { yaw: 0.55, face: true }]);
   cols = 2; rows = 1;
+} else if (sheet === "emotions"){
+  // лист всех эмоций лицом (фас, чтобы формы глаз/бровей/рта было видно без ракурса) — для сверки с
+  // референс-листом Rizy Emotions Master.png; событие пускаем на 1 кадр внутри seq, затем держим паузу,
+  // чтобы попасть в окно удержания эмоции (см. faceJoyT/faceHurtT/... в src/rizy-toy.js)
+  const air = (vy, extra) => Object.assign({ grounded: false, vy, speed: 0.6, facing: 1 }, extra);
+  const idle = { grounded: true, speed: 0, facing: 1 };
+  views = place([
+    { label: "база", yaw: 0, face: true, seq: [[1.0, idle]] },
+    { label: "радость (collect)", yaw: 0, face: true, seq: [[0.7, idle], [0.02, { ...idle, event: "collect" }], [0.3, idle]] },
+    { label: "ой (hurt)", yaw: 0, face: true, seq: [[0.5, idle], [0.02, { ...idle, event: "hurt" }], [0.35, idle]] },
+    // dashing:true не держим — тело сразу наклоняется вперёд (это отдельная, не меняемая анимация рывка) и
+    // крупный план «утыкается» в макушку; лицо держится своим таймером (faceDashT) и без этого — пока st.dash
+    // естественно гаснет (damp), эмоция «решимости» на лице ещё видна, а кадр остаётся по центру
+    { label: "решимость (dash)", yaw: 0, face: true, seq: [[0.5, idle], [0.02, { ...idle, event: "dash" }], [0.4, idle]] },
+    { label: "восторг (djump)", yaw: 0, face: true, seq: [[0.3, air(3)], [0.02, air(7, { event: "djump" })], [0.3, air(4)]] },
+    { label: "победа (win)", yaw: 0, face: true, seq: [[0.5, idle], [0.02, { ...idle, event: "win" }], [0.35, idle]] },
+    { label: "любопытство (idle > 3с)", yaw: 0, face: true, seq: [[3.8, idle]] },
+    { label: "на лиане (climb)", yaw: 0, face: true, seq: [[0.6, { grounded: false, speed: 0, facing: 1, climbing: true, climbV: 0.3 }]] },
+  ]);
+  cols = 4; rows = 2;
 } else {
   views = place([{ yaw: 0 }, { yaw: 0.6 }, { yaw: Math.PI / 2 }, { yaw: Math.PI }]);
   cols = 4; rows = 1;

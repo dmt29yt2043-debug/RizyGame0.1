@@ -86,6 +86,27 @@ float rzNoise(vec3 x){ vec3 i = floor(x), f = fract(x); f = f * f * (3.0 - 2.0 *
   return mat;
 }
 
+// контурная подсветка (Френель) по силуэту кожи/волос — чтобы Ризи не терялась на пёстром фоне уровня.
+// Без нового прохода — как patchFibre, добавляем в totalEmissiveRadiance перед выводом (аддитивно, поверх
+// освещения). Безопасно на Mac: normalize — только через деление на max(length, eps), pow — только от
+// неотрицательного clamp (без этого normalize(0) и pow(отрицательное) дают NaN → чёрный экран).
+function patchRim(mat, color, strength, power = 3){
+  const prev = mat.onBeforeCompile, prevKey = mat.customProgramCacheKey, c = new THREE.Color(color);
+  mat.onBeforeCompile = function (sh, r){
+    if (prev) prev.call(this, sh, r);
+    sh.fragmentShader = sh.fragmentShader.replace("#include <emissivemap_fragment>", `#include <emissivemap_fragment>
+{
+  vec3 rzV = vViewPosition / max(length(vViewPosition), 1e-4);
+  float rzNdotV = clamp(dot(normal, rzV), 0.0, 1.0);
+  float rzFres = pow(clamp(1.0 - rzNdotV, 0.0, 1.0), ${power.toFixed(2)});
+  totalEmissiveRadiance += vec3(${c.r.toFixed(4)}, ${c.g.toFixed(4)}, ${c.b.toFixed(4)}) * (rzFres * ${strength.toFixed(3)});
+}`);
+  };
+  mat.customProgramCacheKey = function (){ return (prevKey ? prevKey.call(this) : "") + "|rizyRim" + color.toString(16) + "/" + strength + "/" + power; };
+  mat.needsUpdate = true;
+  return mat;
+}
+
 // точка на голове: az — вокруг оси Y (0 = вперёд, +Z), el — вверх; r — радиус
 const HEAD_R = 0.3;
 function onHead(az, el, r = HEAD_R){ return V3(Math.sin(az) * Math.cos(el) * r, Math.sin(el) * r, Math.cos(az) * Math.cos(el) * r); }
@@ -243,6 +264,9 @@ export function createRizyToy(opts = {}){
     patchFibre(mats.flowerA, { freq: 140, amp: 0.06, nrm: 0.14 });
     patchFibre(mats.flowerB, { freq: 140, amp: 0.06, nrm: 0.14 });
   }
+  // рим — на всех уровнях качества: это добавка к цвету пикселя, не геометрия (не влияет на draw calls/треугольники)
+  patchRim(mats.skin, 0xE3D9FF, 0.3, 3);
+  patchRim(mats.hair, 0xFFF3E2, 0.28, 3);
   const hurtMats = [mats.skin, mats.hair, mats.sweater, mats.jeans];
 
   // ---------- скелет из групп ----------
@@ -257,6 +281,17 @@ export function createRizyToy(opts = {}){
   const neck = new THREE.Group(); neck.position.y = 0.37; torso.add(neck);
   const head = new THREE.Group(); head.position.y = 0.26; head.scale.set(1.05, 0.98, 1); neck.add(head);
   const eyes = [-1, 1].map(s => { const g = new THREE.Group(); head.add(g); return g; });
+  // зрачок+блики — дочерняя группа внутри каждого глаза (двигаем в сторону при взгляде-любопытстве;
+  // поворот всего глаза для этого не годится — зрачок слишком близко к оси, сдвиг незаметен). pupilBase —
+  // база позиции, проставляется при постройке ниже.
+  const pupils = eyes.map(E => { const g = new THREE.Group(); E.add(g); return g; });
+  const pupilBase = [null, null];
+  // брови — отдельная группа на сторону (pivot проставляется при постройке ниже, в середине дуги), чтобы
+  // наклонять каждую независимо; mouthSmile/mouthO — два варианта рта с общим pivot (см. постройку рта)
+  const brows = [-1, 1].map(s => { const g = new THREE.Group(); head.add(g); return g; });
+  const browPivotY = [0, 0];
+  const mouthSmile = new THREE.Group(); head.add(mouthSmile);
+  const mouthO = new THREE.Group(); head.add(mouthO);
   const buns = [-1, 1].map(s => { const g = new THREE.Group(); g.position.set(s * 0.2, 0.31, -0.04); head.add(g); return g; });
 
   // накопитель: детали сливаются по (группа, материал) — мало draw calls
@@ -352,28 +387,46 @@ export function createRizyToy(opts = {}){
     E.position.copy(p);
     const q = qTo(d), up = V3(0, 1, 0).applyQuaternion(q), side = V3(1, 0, 0).applyQuaternion(q);
     add(E, mats.white, sph(0.088, 28, 20), M4(null, q, V3(0.84, 1.06, 0.34)));
-    add(E, mats.eye, sph(0.076, 28, 20), M4(d.clone().multiplyScalar(0.012).addScaledVector(up, -0.006), q, V3(0.82, 1.02, 0.42)));
-    add(E, mats.shine, sph(0.022, 12, 8), M4(d.clone().multiplyScalar(0.043).addScaledVector(up, 0.03).addScaledVector(side, 0.022), q, V3(1, 1.1, 0.5)));
-    add(E, mats.shine, sph(0.01, 8, 6), M4(d.clone().multiplyScalar(0.04).addScaledVector(up, -0.03).addScaledVector(side, -0.022), q, V3(1, 1, 0.5)));
+    // зрачок и оба блика — в pupils[i], координаты пересчитаны относительно её pivot (pupilBase)
+    const pupilC = d.clone().multiplyScalar(0.012).addScaledVector(up, -0.006);
+    pupils[i].position.copy(pupilC);
+    pupilBase[i] = pupilC.clone();
+    add(pupils[i], mats.eye, sph(0.076, 28, 20), M4(null, q, V3(0.82, 1.02, 0.42)));
+    add(pupils[i], mats.shine, sph(0.022, 12, 8), M4(d.clone().multiplyScalar(0.031).addScaledVector(up, 0.036).addScaledVector(side, 0.022), q, V3(1, 1.1, 0.5)));
+    add(pupils[i], mats.shine, sph(0.01, 8, 6), M4(d.clone().multiplyScalar(0.028).addScaledVector(up, -0.024).addScaledVector(side, -0.022), q, V3(1, 1, 0.5)));
     add(E, mats.eye, new THREE.TorusGeometry(0.089, 0.0045, 6, 24, PI * 0.78), M4(d.clone().multiplyScalar(0.022), q.clone().multiply(qE(0, 0, PI * 0.11)), V3(0.84, 1.06, 1)));
     // ресничка во внешнем уголке
     const lp = d.clone().multiplyScalar(0.02).addScaledVector(up, 0.07).addScaledVector(side, s * 0.066);
     add(E, mats.eye, taperTube([lp, lp.clone().addScaledVector(up, 0.018).addScaledVector(side, s * 0.022)], 0.006, 0.003, 6, 6));
-    // брови — тонкие синие дуги
+    // брови — тонкие синие дуги; каждая в своей группе с pivot в середине дуги — так можно наклонять
+    // независимо (домиком на испуге, насуплены на рывке/лиане) поворотом группы, не пересобирая геометрию
+    const browAt = t => onHead(s * (0.2 + 0.26 * t), 0.24 + 0.05 * Math.sin(PI * Math.pow(t, 0.8)) - 0.02 * t, HEAD_R + 0.004);
+    const browPivot = browAt(0.5);
+    brows[i].position.copy(browPivot);
+    browPivotY[i] = browPivot.y;
     const bp = [];
-    for (let k = 0; k <= 6; k++){ const t = k / 6; bp.push(onHead(s * (0.2 + 0.26 * t), 0.24 + 0.05 * Math.sin(PI * Math.pow(t, 0.8)) - 0.02 * t, HEAD_R + 0.004)); }
-    add(head, mats.brow, taperTube(bp, 0.0075, 0.005, 6, 16));
+    for (let k = 0; k <= 6; k++) bp.push(browAt(k / 6).sub(browPivot));
+    add(brows[i], mats.brow, taperTube(bp, 0.0075, 0.005, 6, 16));
   }
   // нос
   add(head, mats.skin, sph(0.032, 14, 10), M4(onHead(0, -0.2, HEAD_R + 0.008), null, V3(1.1, 0.9, 0.9)));
-  // рот: широкая открытая улыбка — тёмная «чаша» с плоским верхом, зубки сверху, язычок снизу
+  // рот: широкая открытая улыбка — тёмная «чаша» с плоским верхом, зубки сверху, язычок снизу.
+  // Улыбка и «О» — в своих группах с общим pivot на поверхности лица: ширину/раскрытие меняем масштабом
+  // группы улыбки (радость/решимость/восторг/победа), на испуге прячем улыбку и растим «О» — кросс-масштаб
+  // вместо пересборки геометрии (mouthO по умолчанию скрыт и почти нулевого размера).
   {
     const d = onHead(0, -0.52, 1).normalize(), q = qTo(d);
     const up = V3(0, 1, 0).applyQuaternion(q);
-    const at = (u, v, f) => d.clone().multiplyScalar(HEAD_R + f).addScaledVector(up, v).add(V3(u, 0, 0));
-    add(head, mats.mouth, new THREE.SphereGeometry(0.1, 28, 12, 0, TAU, PI / 2, PI / 2), M4(at(0, 0.03, -0.006), q, V3(1.05, 0.62, 0.3)));
-    add(head, mats.teeth, rbox(0.13, 0.026, 0.02, 0.008), M4(at(0, 0.018, 0.006), q));
-    add(head, mats.tongue, sph(0.045, 16, 12), M4(at(0, -0.018, 0.0), q, V3(1.05, 0.55, 0.45)));
+    const anchor = d.clone().multiplyScalar(HEAD_R);
+    const at = (u, v, f) => d.clone().multiplyScalar(HEAD_R + f).addScaledVector(up, v).add(V3(u, 0, 0)).sub(anchor);
+    mouthSmile.position.copy(anchor);
+    add(mouthSmile, mats.mouth, new THREE.SphereGeometry(0.1, 28, 12, 0, TAU, PI / 2, PI / 2), M4(at(0, 0.03, -0.006), q, V3(1.05, 0.62, 0.3)));
+    add(mouthSmile, mats.teeth, rbox(0.13, 0.026, 0.02, 0.008), M4(at(0, 0.018, 0.006), q));
+    add(mouthSmile, mats.tongue, sph(0.045, 16, 12), M4(at(0, -0.018, 0.0), q, V3(1.05, 0.55, 0.45)));
+    // «О» — маленький тёмный овал на «ой»/испуг; скрыт по умолчанию, растёт из точки вместе с faceHurtW
+    mouthO.position.copy(anchor);
+    add(mouthO, mats.mouth, sph(0.042, 14, 10), M4(V3(0, -0.006, 0.006), q, V3(0.82, 1.18, 0.55)));
+    mouthO.visible = false;
   }
 
   // ===== ВОЛОСЫ: гладкое каре-«шлем», чёлка прядями, боковые пряди, пучки =====
@@ -432,11 +485,14 @@ export function createRizyToy(opts = {}){
 
   // ---------- сборка мешей ----------
   const meshes = [];
+  // тень отбрасывает только силуэт (кожа, волосы, одежда, обувь): мелочи лица и аппликации лежат на поверхности
+  // тела — их тень не видна, а каждый такой меш в проходе теней стоил отдельный draw call (Ризи было 88 из ~160)
+  const SHADOW_MATS = new Set([mats.skin, mats.hair, mats.sweater, mats.rib, mats.jeans, mats.jeansHem, mats.shoe, mats.sole]);
   for (const { group, mat, list } of acc.values()){
     const g = list.length > 1 ? mergeGeometries(list) : list[0];
     g.computeBoundingSphere();
     const m = new THREE.Mesh(g, mat);
-    m.castShadow = mat !== mats.shine && mat !== mats.blush; m.receiveShadow = false;
+    m.castShadow = SHADOW_MATS.has(mat); m.receiveShadow = false; m.userData.noShadow = !m.castShadow;
     if (mat === mats.blush) m.renderOrder = 2;
     group.add(m); meshes.push(m);
   }
@@ -446,8 +502,14 @@ export function createRizyToy(opts = {}){
     t: 0, phase: 0, yaw: 0.95, run: 0, air: 0, dash: 0, hurt: 0, win: 0, collect: 0,
     sq: 0, sqV: 0,                      // пружина сплющивания: 0 — покой, <0 — сплющена, >0 — вытянута
     bun: [0, 0], bunV: [0, 0], vyPrev: 0,
-    flipT: -1, blinkT: 2.2, blink: 0,
+    flipT: -1, blinkT: 2.2, blink: 0, doubleBlinkPending: false,
     climb: 0, climbPhase: 0,            // лазание по лиане (уровень 2): вес позы + ритм рук/ног
+    // эмоции лица: *T — обратный отсчёт удержания после события (сек, ~0.4–0.6), *W — сглаженный вес 0..1,
+    // едущий к (T>0 ? 1 : 0) с постоянной ~0.15 с (см. update). hurt/win/collect выше по-прежнему двигают
+    // тело (вспышка/наклон/прыжок-победа) — это отдельная, не изменённая логика.
+    faceJoyT: 0, faceJoyW: 0, faceHurtT: 0, faceHurtW: 0, faceDashT: 0, faceDashW: 0, faceDelightT: 0, faceDelightW: 0, faceWinW: 0,
+    collectStreak: 0, collectGapT: 0,   // серия сборов подряд (окно ~1.1 с) — усиливает улыбку
+    idleT: 0, curiousW: 0, gazeX: 0,    // любопытство: стоит спокойно дольше 3 с — взгляд гуляет по сторонам
   };
   const lerp = (a, b, k) => a + (b - a) * k;
   const damp = (a, b, l, dt) => a + (b - a) * (1 - Math.exp(-l * dt));
@@ -467,6 +529,21 @@ export function createRizyToy(opts = {}){
     if (ev === "win"){ st.win = 1; }
     st.vyPrev = vy;
 
+    // эмоции лица — держим отдельные от боевых/физических реакций таймеры (см. коммент у st)
+    if (ev === "collect"){ st.collectStreak = st.collectGapT > 0 ? Math.min(st.collectStreak + 1, 3) : 0; st.collectGapT = 1.1; st.faceJoyT = 0.5; }
+    if (ev === "hurt") st.faceHurtT = 0.6;
+    if (ev === "dash") st.faceDashT = 0.5;
+    if (ev === "djump") st.faceDelightT = 0.45;
+    st.collectGapT = Math.max(0, st.collectGapT - dt);
+    st.faceJoyT = Math.max(0, st.faceJoyT - dt); st.faceHurtT = Math.max(0, st.faceHurtT - dt);
+    st.faceDashT = Math.max(0, st.faceDashT - dt); st.faceDelightT = Math.max(0, st.faceDelightT - dt);
+    const FACE_L = 18;   // ~0.15 с на переход (по ТЗ 0.1–0.2 с) — сглаживаем к 1, пока таймер держит эмоцию
+    st.faceJoyW = damp(st.faceJoyW, st.faceJoyT > 0 ? 1 : 0, FACE_L, dt);
+    st.faceHurtW = damp(st.faceHurtW, st.faceHurtT > 0 ? 1 : 0, FACE_L, dt);
+    st.faceDashW = damp(st.faceDashW, st.faceDashT > 0 ? 1 : 0, FACE_L, dt);
+    st.faceDelightW = damp(st.faceDelightW, st.faceDelightT > 0 ? 1 : 0, FACE_L, dt);
+    st.faceWinW = damp(st.faceWinW, st.win > 0 ? 1 : 0, FACE_L, dt);
+
     // веса поз
     st.run = damp(st.run, grounded ? speed : 0, 14, dt);
     st.air = damp(st.air, grounded ? 0 : 1, 18, dt);
@@ -477,6 +554,11 @@ export function createRizyToy(opts = {}){
     const climbing = !!s.climbing, climbV = Math.max(-1, Math.min(1, s.climbV || 0));
     st.climb = damp(st.climb, climbing ? 1 : 0, 16, dt);
     st.climbPhase += dt * (Math.abs(climbV) > 0.05 ? 3.2 + 4.2 * Math.abs(climbV) : 0.9);
+
+    // любопытство: спокойно стоит (не бежит, не в воздухе, не лезет, не в рывке, не «ой») дольше 3 с
+    const standingStill = grounded && speed < 0.03 && st.air < 0.05 && st.climb < 0.05 && st.dash < 0.05 && st.faceHurtT <= 0;
+    st.idleT = standingStill ? st.idleT + dt : 0;
+    st.curiousW = damp(st.curiousW, st.idleT > 3 ? 1 : 0, 6, dt);
 
     // пружина сплющивания
     st.sqV += (-260 * st.sq - 16 * st.sqV) * dt; st.sq += st.sqV * dt;
@@ -540,10 +622,58 @@ export function createRizyToy(opts = {}){
     neck.rotation.z = Math.sin(st.t * 0.9) * 0.05 * idle + st.hurt * 0.2 * Math.sin(st.t * 30);
     neck.rotation.y = sw * 0.1 * run;
     st.blinkT -= dt;
-    if (st.blinkT <= 0){ st.blink = 0.14; st.blinkT = 2.4 + ((st.t * 7.3) % 1) * 2.2; }
+    if (st.blinkT <= 0){
+      st.blink = 0.14;
+      // любопытство: иногда сразу после обычного моргания планируем короткое повторное (двойное моргание)
+      if (st.doubleBlinkPending){ st.blinkT = 0.16; st.doubleBlinkPending = false; }
+      else {
+        st.blinkT = 2.4 + ((st.t * 7.3) % 1) * 2.2;
+        if (st.curiousW > 0.6 && ((st.t * 13.1) % 1) < 0.35) st.doubleBlinkPending = true;
+      }
+    }
     st.blink = Math.max(0, st.blink - dt);
-    const eyeY = st.hurt > 0.4 ? 0.25 : st.blink > 0 ? 0.12 : 1;
-    for (const e of eyes) e.scale.y = damp(e.scale.y, eyeY, 40, dt);
+    // форма глаз по эмоции: прищур радости/победы, широко раскрытые «ой» (испуг — в конце цепочки, перекрывает)
+    const EYE_SQUINT_Y = 0.38, EYE_WIDE_Y = 1.32, EYE_WIDE_X = 1.12;
+    let eyeShapeY = lerp(1, 0.82, st.climb), eyeShapeX = 1;
+    eyeShapeY = lerp(eyeShapeY, EYE_SQUINT_Y, st.faceJoyW); eyeShapeX = lerp(eyeShapeX, 1.05, st.faceJoyW);
+    eyeShapeY = lerp(eyeShapeY, EYE_SQUINT_Y * 0.85, st.faceWinW); eyeShapeX = lerp(eyeShapeX, 1.07, st.faceWinW);
+    eyeShapeY = lerp(eyeShapeY, EYE_WIDE_Y, st.faceHurtW); eyeShapeX = lerp(eyeShapeX, EYE_WIDE_X, st.faceHurtW);
+    const eyeY = st.blink > 0 ? 0.12 : eyeShapeY;
+    // взгляд любопытства: раз в ~1.7 с новая цель (вправо/влево/центр), включается только весом curiousW.
+    // Двигаем зрачок (pupils[i].position.x — общая мировая ось для обоих глаз, чтобы не «скашивало»),
+    // не глаз целиком: рычаг от pivot глаза до зрачка слишком мал, поворотом взгляд почти не виден.
+    const gazeSlot = Math.floor(st.t / 1.7) % 3;
+    const gazeTarget = (gazeSlot === 1 ? 0.016 : gazeSlot === 2 ? -0.016 : 0) * st.curiousW;
+    st.gazeX = damp(st.gazeX, gazeTarget, 6, dt);
+    for (let i = 0; i < 2; i++){
+      eyes[i].scale.y = damp(eyes[i].scale.y, eyeY, 40, dt);
+      eyes[i].scale.x = damp(eyes[i].scale.x, eyeShapeX, 40, dt);
+      pupils[i].position.set(pupilBase[i].x + st.gazeX, pupilBase[i].y, pupilBase[i].z);
+    }
+    // брови: наклон вокруг середины дуги («домиком» на испуге, насуплены на рывке/лиане) + лёгкий подъём.
+    // Отрицательный наклон поднимает внутренний (носовой) край дуги — знак проверен расчётом мировых
+    // координат концов дуги при повороте группы (не подбирался на глаз по рендеру).
+    const BROW_TILT_HURT = -0.3, BROW_TILT_DASH = 0.28, BROW_TILT_CLIMB = 0.12, BROW_LIFT_HURT = 0.014, BROW_LIFT_WIN = 0.006;
+    let browTilt = lerp(0, BROW_TILT_CLIMB, st.climb);
+    browTilt = lerp(browTilt, BROW_TILT_DASH, st.faceDashW);
+    let browLift = lerp(0, BROW_LIFT_WIN, st.faceWinW);
+    browTilt = lerp(browTilt, BROW_TILT_HURT, st.faceHurtW);
+    browLift = lerp(browLift, BROW_LIFT_HURT, st.faceHurtW);
+    for (let i = 0; i < 2; i++){
+      const sgn = i ? 1 : -1;
+      brows[i].rotation.z = damp(brows[i].rotation.z, sgn * browTilt, 18, dt);
+      brows[i].position.y = damp(brows[i].position.y, browPivotY[i] + browLift, 18, dt);
+    }
+    // рот: ширина/раскрытие — масштаб группы улыбки; на испуге прячем улыбку и растим «О» (кросс-масштаб)
+    let mouthSX = lerp(1, 0.88, st.climb * 0.6), mouthSY = 1;
+    mouthSX = lerp(mouthSX, 0.74, st.faceDashW);
+    mouthSX = lerp(mouthSX, 1.16 + 0.03 * st.collectStreak, st.faceJoyW); mouthSY = lerp(mouthSY, 0.93, st.faceJoyW);
+    mouthSX = lerp(mouthSX, 1.1, st.faceDelightW); mouthSY = lerp(mouthSY, 1.32, st.faceDelightW);
+    mouthSX = lerp(mouthSX, 1.3, st.faceWinW); mouthSY = lerp(mouthSY, 1.08, st.faceWinW);
+    mouthSmile.scale.set(damp(mouthSmile.scale.x, mouthSX, 18, dt), damp(mouthSmile.scale.y, mouthSY, 18, dt), 1);
+    mouthSmile.visible = st.faceHurtW < 0.5;
+    mouthO.visible = st.faceHurtW > 0.02;
+    mouthO.scale.setScalar(Math.max(0.05, damp(mouthO.scale.x, st.faceHurtW, 22, dt)));
 
     // пучки — пружинки от вертикального ускорения
     const acc = (grounded ? -bob * 0.6 * run : vy * 0.02) + sq * 2;
@@ -579,5 +709,5 @@ export function createRizyToy(opts = {}){
   }
 
   update(0, { grounded: true, speed: 0, facing: 1 });
-  return { root, height: 1.5, update, dispose, parts: { squash, flip, body, hips, torso, legs, arms, neck, head, eyes, buns }, meshes };
+  return { root, height: 1.5, update, dispose, parts: { squash, flip, body, hips, torso, legs, arms, neck, head, eyes, pupils, brows, buns, mouthSmile, mouthO }, meshes };
 }

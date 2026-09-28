@@ -12,6 +12,7 @@
 import * as THREE from "three";
 import { PAL, CAM } from "../config.js";
 import { makeRng } from "./tex.js";
+import { createLife } from "./life.js";
 
 const TAN = Math.tan(THREE.MathUtils.degToRad(CAM.fov / 2));
 // TextureLoader резолвит обычную строку относительно URL страницы, а не модуля — берём абсолютный
@@ -168,18 +169,29 @@ export function createEnvironment(renderer, panorama, { night = false } = {}){
 
 // ---------- ЗАДНИКИ ----------
 // материал слоя: карта + мягкое затухание альфы к краям плоскости (по «сырым» uv, не по uv карты —
-// у облаков карта повторяется и дрейфует): fx — доля ширины с каждого бока, fb/ft — снизу/сверху
-function fadeMaterial(map, { fx = 0, fb = 0, ft = 0, opacity = 1, solid = 0 } = {}){
+// у облаков карта повторяется и дрейфует): fx — доля ширины с каждого бока, fb/ft — снизу/сверху.
+// grade — иерархия слоёв (столп «Ризи — звезда кадра»): нарисованный задник чуть приглушаем (desat —
+// снижение насыщенности, contrast<1 — снижение контраста) и уводим в лёгкую дымку цвета неба (haze/
+// hazeColor) — тонко, 10-20%, чтобы не убить красоту фона; игровой слой (стены/кристаллы/Ризи) остаётся
+// самым «вкусным». twinkle (только ночной город) — лёгкое мерцание огней, см. createBackdrop.update().
+function fadeMaterial(map, { fx = 0, fb = 0, ft = 0, opacity = 1, solid = 0, desat = 0, haze = 0, hazeColor = 0xffffff, contrast = 1 } = {}){
   const mat = new THREE.MeshBasicMaterial({ map, transparent: true, depthWrite: false, fog: false, opacity });
   mat.onBeforeCompile = sh => {
     sh.uniforms.uFade = { value: new THREE.Vector3(fx, fb, ft) };
     sh.uniforms.uSolid = { value: solid };
+    sh.uniforms.uGrade = { value: new THREE.Vector4(desat, haze, contrast, 0) };
+    sh.uniforms.uHaze = { value: new THREE.Color(hazeColor) };
+    sh.uniforms.uTwinkle = { value: 0 };
     sh.vertexShader = sh.vertexShader
       .replace("#include <common>", "#include <common>\nvarying vec2 vFadeUv;")
       .replace("#include <uv_vertex>", "#include <uv_vertex>\nvFadeUv = uv;");
     sh.fragmentShader = sh.fragmentShader
-      .replace("#include <common>", "#include <common>\nuniform vec3 uFade;\nuniform float uSolid;\nvarying vec2 vFadeUv;")
+      .replace("#include <common>", "#include <common>\nuniform vec3 uFade;\nuniform float uSolid;\nuniform vec4 uGrade;\nuniform vec3 uHaze;\nuniform float uTwinkle;\nvarying vec2 vFadeUv;")
       .replace("#include <map_fragment>", `#include <map_fragment>
+        float bgLum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(bgLum), uGrade.x);
+        diffuseColor.rgb = mix(diffuseColor.rgb, uHaze, uGrade.y);
+        diffuseColor.rgb = (diffuseColor.rgb - 0.5) * uGrade.z + 0.5 + uTwinkle;
         // uSolid > 0: полупрозрачные края вырезки (стеклянные башни) делаем плотнее — меньше «призраков»
         if (uSolid > 0.0) diffuseColor.a = mix(diffuseColor.a, smoothstep(0.02, 0.55, diffuseColor.a), uSolid);
         float fadeK = 1.0;
@@ -187,6 +199,7 @@ function fadeMaterial(map, { fx = 0, fb = 0, ft = 0, opacity = 1, solid = 0 } = 
         if (uFade.y > 0.0) fadeK *= smoothstep(0.0, uFade.y, vFadeUv.y);
         if (uFade.z > 0.0) fadeK *= smoothstep(0.0, uFade.z, 1.0 - vFadeUv.y);
         diffuseColor.a *= fadeK;`);
+    mat.userData.shader = sh;
   };
   mat.customProgramCacheKey = () => "bg-fade";
   return mat;
@@ -206,15 +219,26 @@ export function createBackdrop(level, { dir = "", night = false } = {}){
   const REF_Y = 1.5;                         // типичная высота камеры (по ней раскладываем слои)
   const layers = [];
   const disposers = [];
+  // иерархия слоёв (столп «Ризи — звезда кадра», см. fadeMaterial выше): дальний расписной город —
+  // самая приглушённая/холодная дымка; облака — вполовину слабее (они и так мягкие); зал у финиша
+  // («золотой зал», «обсерватория») не трогаем — он уже эталон композиции по ревью.
+  const gradeCity = night
+    ? { desat: 0.16, haze: 0.14, hazeColor: 0x5b5aa0, contrast: 0.86 }
+    : { desat: 0.13, haze: 0.11, hazeColor: 0xffd9b8, contrast: 0.88 };
+  const gradeClouds = night
+    ? { desat: 0.09, haze: 0.09, hazeColor: 0x6a6ab0, contrast: 0.93 }
+    : { desat: 0.07, haze: 0.06, hazeColor: 0xffe6cc, contrast: 0.94 };
 
   // ---- город: 6 тайлов a/b/c с зеркалами, перекрытие = ширина растворения краёв ----
+  let cityMats = [];
   {
     const D = 70, P = 0.3, PY = 0.85, FX = 0.17;
     const hh = halfH(D), h = 34, w = h * IMG_ASPECT;
     const yBot = centerY(REF_Y, D) - 0.86 * hh;                         // низ облачного подножия — под кадром
     const names = night ? ["city-night-a.png", "city-night-b.png", "city-night-c.png"] : ["city-mid-a.png", "city-mid-b.png", "city-mid-c.png"];
     const texs = names.map((n, i) => loadBg(n, dir, ok => { if (!ok) mats[i].opacity = 0; }));
-    const mats = texs.map(t => fadeMaterial(t, { fx: FX, fb: 0.12, solid: 1 }));
+    const mats = texs.map(t => fadeMaterial(t, { fx: FX, fb: 0.12, solid: 1, ...gradeCity }));
+    cityMats = mats;
     disposers.push(() => { for (const t of texs) t.dispose(); for (const m of mats) m.dispose(); });
     // ход камеры по x → какой диапазон локальных x слоя вообще виден (с запасом на 21:9)
     const camMin = level.minX - 2, camMax = level.maxX + 2, halfW = hh * 2.4;
@@ -243,7 +267,7 @@ export function createBackdrop(level, { dir = "", night = false } = {}){
     const camMin = level.minX - 2, camMax = level.maxX + 2, halfW = hh * 2.4;
     const lo = camMin - halfW - (camMin - levelMid) * P, hi = camMax + halfW - (camMax - levelMid) * P;
     const reps = Math.ceil((hi - lo) / w);
-    const cloudsMat = fadeMaterial(null, { fb: 0.1, fx: 0.02, opacity: 0.88 });
+    const cloudsMat = fadeMaterial(null, { fb: 0.1, fx: 0.02, opacity: 0.88, ...gradeClouds });
     cloudsTex = loadBg(night ? "clouds-night.png" : "clouds.png", dir, ok => {
       if (!ok){ cloudsMat.opacity = 0; return; }
       cloudsTex.wrapS = THREE.MirroredRepeatWrapping; cloudsTex.wrapT = THREE.ClampToEdgeWrapping;
@@ -282,6 +306,12 @@ export function createBackdrop(level, { dir = "", night = false } = {}){
     disposers.push(() => { hallTex.dispose(); mat.dispose(); if (fallback && mat.map !== fallback) fallback.dispose(); });
   }
 
+  // «живой» фон (life.js) — тарелки/пыльца-лепестки/светлячки/звёзды/окна/искры ориентиров/передний
+  // план: один общий Points, встраивается через ту же группу/update, что и остальной задник (main.js
+  // не трогаем — см. buildLevel: и группа, и update() уже проходят через backdrop).
+  const life = createLife(level, { night });
+  group.add(life.group);
+
   return {
     group,
     // t — время мира (абсолютное, стоит на паузе), camX/camY — текущая точка кадра (параллакс)
@@ -292,9 +322,16 @@ export function createBackdrop(level, { dir = "", night = false } = {}){
         L.g.position.y = (cy - REF_Y) * L.PY;
       }
       cloudsTex.offset.x = (t * 0.004) % 2;
+      // мягкое мерцание огней ночного города — общий лёгкий пульс + случайный сдвиг фазы на тайл
+      if (night) cityMats.forEach((m, idx) => {
+        const sh = m.userData.shader; if (!sh) return;
+        sh.uniforms.uTwinkle.value = 0.012 * Math.sin(t * 0.6 + idx * 2.1) + 0.01 * Math.max(0, Math.sin(t * 2.4 + idx * 4.2));
+      });
+      life.update(t, cx, cy);
     },
     dispose(){
       group.traverse(o => { if (o.isMesh) o.geometry.dispose(); });
+      life.dispose();
       for (const d of disposers) d();
     },
   };

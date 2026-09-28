@@ -144,9 +144,8 @@ export function blobTexture(){
 }
 
 // ---------- табличка-подсказка: белая плашка с тёмно-синей обводкой, на двух ножках ----------
-// возвращает { texture, aspect } — плоскость делаем с этим соотношением сторон
-export function signTexture(lines, renderer){
-  const W = 640, H = 330, c = canvas(W, H), g = c.getContext("2d");
+// общий рисовальщик одной плашки (переиспользуется и для одиночной текстуры, и для атласа ниже)
+function paintSignPlaque(g, W, H, lines){
   const ink = hex(PAL.ink);
   // ножки
   g.fillStyle = "#b8a6d8"; g.strokeStyle = ink; g.lineWidth = 7;
@@ -167,6 +166,21 @@ export function signTexture(lines, renderer){
     fit(lines[0], 46); g.fillStyle = hex(PAL.blue); g.fillText(lines[0], W / 2, y0 - 34);
     fit(lines[1], 60); g.fillStyle = ink; g.fillText(lines[1], W / 2, y0 + 30);
   }
+}
+// возвращает { texture, aspect } — плоскость делаем с этим соотношением сторон
+export function signTexture(lines, renderer){
+  const W = 640, H = 330, c = canvas(W, H), g = c.getContext("2d");
+  paintSignPlaque(g, W, H, lines);
   const t = finish(c, renderer, false);
   return { texture: t, aspect: W / H };
+}
+// атлас всех табличек уровня в одной текстуре (один столбец ячеек) — так все таблички рисуются одним
+// draw call'ом (см. props.js createSigns: один Batch-меш с разными uv-диапазонами по ячейкам вместо
+// N отдельных мешей); экономия draw calls важна — бюджет ≤150 на уровень.
+export function signAtlasTexture(signsList, renderer){
+  const W = 640, H = 330, N = Math.max(1, signsList.length);
+  const c = canvas(W, H * N), g = c.getContext("2d");
+  signsList.forEach((sg, i) => { g.save(); g.translate(0, i * H); paintSignPlaque(g, W, H, sg.lines); g.restore(); });
+  const t = finish(c, renderer, false);
+  return { texture: t, W, H, N };
 }

@@ -75,6 +75,18 @@ export function createAudio(){
     hurt(){ tone({ f: 420, f2: 160, dur: 0.32, type: "square", g: 0.12 }); tone({ f: 427, f2: 150, dur: 0.32, type: "sawtooth", g: 0.06 }); noise({ dur: 0.2, g: 0.1, type: "lowpass", f: 900 }); },
     fall(){ tone({ f: 600, f2: 120, dur: 0.5, type: "triangle", g: 0.16 }); },
     checkpoint(){ noise({ dur: 0.5, g: 0.16, type: "lowpass", f: 400, f2: 2400, q: 0.8, a: 0.05 }); [0, 4, 7, 12].forEach((d, i) => bell(72 + d, 0.08 + i * 0.08, 0.14, 0.6)); },
+    // хват лианы: мягкий войлочный «тук» (приглушённый низкий тон + короткий шумовой хлопок) + шорох
+    // листьев следом (полосовой шум в зелёном/высоком спектре, чуть дольше и тише)
+    vinegrab(){
+      tone({ f: 190, f2: 110, dur: 0.11, type: "sine", g: 0.16, a: 0.008 });
+      noise({ dur: 0.1, g: 0.1, type: "lowpass", f: 500, f2: 260, q: 1.1, a: 0.004 });
+      noise({ t: 0.02, dur: 0.22, g: 0.07, type: "bandpass", f: 2600, f2: 1700, q: 0.9, a: 0.02 });
+    },
+    // тихий «шаг» подъёма/спуска по лиане — короче и тише хвата, вызывается редко (main.js ограничивает частоту)
+    vinestep(){
+      noise({ dur: 0.07, g: 0.04, type: "bandpass", f: 2000, f2: 1500, q: 1, a: 0.006 });
+      tone({ f: 200, f2: 150, dur: 0.045, type: "sine", g: 0.04, a: 0.004 });
+    },
     win(){
       const seq = [0, 4, 7, 12, 7, 12, 16, 19, 24];
       seq.forEach((d, i) => { bell(72 + d, i * 0.11, 0.16, 0.9); tone({ f: hz(60 + d), t: i * 0.11, dur: 0.3, type: "triangle", g: 0.05 }); });

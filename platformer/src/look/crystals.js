@@ -45,14 +45,25 @@ function starGeometry(R = 0.55, r = 0.24, d = 0.2){
   return g;
 }
 
-// материал: цвет инстанса идёт и в альбедо, и в свечение
-function glowMaterial(glow, env){
+// материал: цвет инстанса идёт и в альбедо, и в свечение + светлый ободок-кант по грани (френель —
+// на краю силуэта, где нормаль почти перпендикулярна взгляду, добавляем яркости цветом кристалла):
+// так кристалл читается даже на пёстром/светлом фоне, силуэт всегда с чёткой светлой каёмкой.
+// pow()/нормализация — только от гарантированно неотрицательных/ненулевых величин (vViewPosition —
+// стандартная варьирующая three.js, не бывает нулевой для видимого фрагмента) — на Metal это безопасно.
+function glowMaterial(glow, env, rim = 1.0){
   const m = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.18, metalness: 0.05, flatShading: true, envMap: env || null, envMapIntensity: 0.9 });
   m.onBeforeCompile = sh => {
     sh.uniforms.uGlow = { value: glow };
+    sh.uniforms.uRim = { value: rim };
     sh.fragmentShader = sh.fragmentShader
-      .replace("#include <common>", "#include <common>\nuniform float uGlow;")
-      .replace("#include <emissivemap_fragment>", "#include <emissivemap_fragment>\n#ifdef USE_INSTANCING_COLOR\n totalEmissiveRadiance += vColor.rgb * uGlow;\n#endif");
+      .replace("#include <common>", "#include <common>\nuniform float uGlow;\nuniform float uRim;")
+      .replace("#include <emissivemap_fragment>", `#include <emissivemap_fragment>
+        #ifdef USE_INSTANCING_COLOR
+          totalEmissiveRadiance += vColor.rgb * uGlow;
+          vec3 rimEye = normalize(vViewPosition);
+          float rimF = pow(clamp(1.0 - max(dot(normal, rimEye), 0.0), 0.0, 1.0), 2.2);
+          totalEmissiveRadiance += mix(vColor.rgb, vec3(1.0), 0.55) * (rimF * uRim);
+        #endif`);
     m.userData.shader = sh;
   };
   return m;
@@ -71,19 +82,20 @@ function haloMesh(count, tex, opacity){
 export function createCrystals(level, { glowTex, env, halos = 0.6, bloom = true }){
   const group = new THREE.Group(); group.name = "crystals";
   const N = level.crystals.length;
-  const gem = new THREE.InstancedMesh(gemGeometry(), glowMaterial(bloom ? 1.6 : 0.9, env), N);
+  const gem = new THREE.InstancedMesh(gemGeometry(), glowMaterial(bloom ? 1.6 : 0.9, env, bloom ? 1.1 : 0.8), N);
   gem.name = "gems";
   gem.frustumCulled = false;
   const col = new THREE.Color();
-  level.crystals.forEach((c, i) => { col.set(COLORS[c.c % 3]); gem.setColorAt(i, col); });
+  const baseCol = level.crystals.map(c => new THREE.Color(COLORS[c.c % 3]));
+  level.crystals.forEach((c, i) => { gem.setColorAt(i, baseCol[i]); });
   group.add(gem);
   const halo = haloMesh(N + 3, glowTex, halos);
-  level.crystals.forEach((c, i) => { col.set(COLORS[c.c % 3]); halo.setColorAt(i, col); });
+  level.crystals.forEach((c, i) => { halo.setColorAt(i, baseCol[i]); });
   group.add(halo);
 
-  // звёздные
+  // звёздные — заметно крупнее и ярче обычных (см. STAR_SC/STAR_GLOW ниже), с более сильным ободком
   const NS = level.stars.length;
-  const star = new THREE.InstancedMesh(starGeometry(), glowMaterial(bloom ? 1.25 : 0.8, env), NS);
+  const star = new THREE.InstancedMesh(starGeometry(), glowMaterial(bloom ? 1.7 : 1.05, env, bloom ? 1.5 : 1.1), NS);
   star.name = "stars";
   star.frustumCulled = false;
   for (let i = 0; i < NS; i++){ col.set(PAL.star); star.setColorAt(i, col); halo.setColorAt(N + i, col.clone().multiplyScalar(1.2)); }
@@ -95,6 +107,11 @@ export function createCrystals(level, { glowTex, env, halos = 0.6, bloom = true 
 
   const state = level.crystals.map(() => ({ got: false, t: -1 }));
   const sstate = level.stars.map(() => ({ got: false, t: -1 }));
+  // позиции малых кристаллов — отдельно от исходных данных уровня: setPos() двигает кристалл (магнит)
+  // без пересборки инстансов — на следующий update() он просто рисуется в новой точке; исходные c.x/c.y
+  // остаются «зерном» фазы покачивания/вращения, чтобы движение магнитом не дёргало анимацию.
+  const pos = level.crystals.map(c => ({ x: c.x, y: c.y }));
+  const STAR_SC = 1.28, STAR_GLOW_HALO = 3.0;
 
   function place(mesh, i, x, y, z, rotY, sc, sy = sc, rotZ = 0){
     _p.set(x, y, z); _e.set(0, rotY, rotZ); _q.setFromEuler(_e); _s.set(sc, sy, sc);
@@ -105,14 +122,23 @@ export function createCrystals(level, { glowTex, env, halos = 0.6, bloom = true 
     _m.compose(_p, _q, _s); halo.setMatrixAt(i, _m);
   }
 
+  const _hc = new THREE.Color();
   return {
     group, state, sstate,
-    reset(){ for (const s of state){ s.got = false; s.t = -1; } for (const s of sstate){ s.got = false; s.t = -1; } },
+    reset(){
+      for (const s of state) { s.got = false; s.t = -1; }
+      for (const s of sstate) { s.got = false; s.t = -1; }
+      level.crystals.forEach((c, i) => { pos[i].x = c.x; pos[i].y = c.y; });     // магнит сброшен — кристаллы на исходных местах
+    },
+    // переместить кристалл i (магнит) — дёшево: просто меняет точку, откуда update() берёт x/y на
+    // следующем кадре; инстансы не пересобираются, «зерно» покачивания/вращения (c.x) не трогаем
+    setPos(i, x, y){ const p = pos[i]; if (p){ p.x = x; p.y = y; } },
     // t — время мира (для фазы), now — оно же, для анимации сбора
     update(t){
       for (let i = 0; i < N; i++){
-        const c = level.crystals[i], s = state[i];
+        const c = level.crystals[i], s = state[i], p = pos[i];
         const bob = Math.sin(t * 2.6 + c.x * 0.7) * 0.09;
+        const sway = Math.sin(t * 1.3 + c.x * 1.7 + 1.1) * 0.06;      // лёгкое покачивание из стороны в сторону
         let sc = 1, lift = 0;
         if (s.got){
           const k = (t - s.t) / 0.22;
@@ -120,28 +146,31 @@ export function createCrystals(level, { glowTex, env, halos = 0.6, bloom = true 
           sc = 1 + 0.6 * k - 1.6 * k * k; lift = k * 0.7; sc = Math.max(0, sc);
         }
         const rot = t * 2.2 + c.x;
-        place(gem, i, c.x, c.y + bob + lift, 0, rot, sc * 1.0, sc * 1.05);
-        placeHalo(i, c.x, c.y + bob + lift, -0.05, 1.25 * sc * (1 + 0.08 * Math.sin(t * 5 + i)));
+        // редкая искорка-блик: короткий резкий всплеск раз в несколько секунд, у каждого кристалла свой сдвиг фазы
+        const sparkle = s.got ? 0 : Math.pow(Math.max(0, Math.sin(t * 1.7 + i * 12.9898)), 26);
+        place(gem, i, p.x + sway, p.y + bob + lift, 0, rot, sc * 1.0, sc * 1.05);
+        placeHalo(i, p.x + sway, p.y + bob + lift, -0.05, 1.25 * sc * (1 + 0.08 * Math.sin(t * 5 + i)) * (1 + sparkle * 0.9));
+        halo.setColorAt(i, _hc.copy(baseCol[i]).multiplyScalar(1 + sparkle * 2.6));
       }
       for (let i = 0; i < NS; i++){
         const c = level.stars[i], s = sstate[i];
         const bob = Math.sin(t * 2 + i) * 0.14;
-        let sc = 1;
+        let sc = STAR_SC;
         if (s.got){
           const k = (t - s.t) / 0.35;
           if (k >= 1){ place(star, i, 0, -999, 0, 0, 0); placeHalo(N + i, 0, -999, 0, 0);
             for (const j of [0, 1]){ _m.makeScale(0, 0, 0); rays.setMatrixAt(i * 2 + j, _m); } continue; }
-          sc = 1 + 0.9 * k - 1.9 * k * k; sc = Math.max(0, sc);
+          sc = STAR_SC * (1 + 0.9 * k - 1.9 * k * k); sc = Math.max(0, sc);
         }
         place(star, i, c.x, c.y + bob, 0, Math.sin(t * 1.7 + i) * 0.7, sc * 1.05, sc * 1.05, Math.sin(t * 1.1 + i) * 0.15);
-        placeHalo(N + i, c.x, c.y + bob, -0.1, 2.6 * sc);
+        placeHalo(N + i, c.x, c.y + bob, -0.1, STAR_GLOW_HALO * sc / STAR_SC);
         for (const j of [0, 1]){
           _p.set(c.x, c.y + bob, -0.08); _e.set(0, 0, t * 0.5 + j * Math.PI / 2); _q.setFromEuler(_e);
           _s.set(3.4 * sc * (1 + 0.1 * Math.sin(t * 3 + j)), 0.32 * sc, 1);
           _m.compose(_p, _q, _s); rays.setMatrixAt(i * 2 + j, _m);
         }
       }
-      gem.instanceMatrix.needsUpdate = true; halo.instanceMatrix.needsUpdate = true;
+      gem.instanceMatrix.needsUpdate = true; halo.instanceMatrix.needsUpdate = true; halo.instanceColor.needsUpdate = true;
       star.instanceMatrix.needsUpdate = true; rays.instanceMatrix.needsUpdate = true;
     },
   };

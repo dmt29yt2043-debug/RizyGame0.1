@@ -64,6 +64,7 @@ export function stepPlayer(p, inp, dt, world, ev){
       p.grounded = false; p.ground = null; p.coyote = 0; p.buffer = 0;
       p.y = Math.max(v.y0, Math.min(v.y1, p.y));
       inp.jumpPressed = false;              // ↑ у входа мог синтетически нажать «прыжок» (алиас в input.js) — гасим
+      ev.push("vgrab");                     // хват лианы — звук («тук» + шорох листьев), см. main.js/audio.js
       break;
     }
   }
